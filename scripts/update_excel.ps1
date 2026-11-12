@@ -3,6 +3,10 @@ param(
     [Parameter(Mandatory=$true)][ValidateSet("day","night")][string]$Shift
 )
 $ErrorActionPreference = "Stop"
+# PowerShell 5.1 otherwise writes stdout/stderr using the OEM code page,
+# which corrupts Japanese file paths when Rust reads them as UTF-8.
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$OutputEncoding = [Console]::OutputEncoding
 Add-Type -AssemblyName Microsoft.VisualBasic
 Add-Type -AssemblyName System.Windows.Forms
 
@@ -61,13 +65,34 @@ function PickSheet($book, [string]$wanted) {
     if ($found.Count -eq 1) { return $found[0] }
     throw "Không tìm thấy sheet '$wanted'. Kiểm tra tên sheet trong settings.json."
 }
-function FetchEvents($cfg, [string]$baseDir) {
+function ShiftDate([string]$shift) {
+    $now=[DateTime]::Now
+    # Night shift from 19:00 to 07:30 belongs to the day it started.
+    if ($shift -eq 'night' -and $now.TimeOfDay -lt [TimeSpan]::FromHours(7.5)) {
+        return $now.AddDays(-1).ToString('yyyy-MM-dd')
+    }
+    return $now.ToString('yyyy-MM-dd')
+}
+function FetchEvents($cfg, [string]$baseDir, [string]$shift) {
     $url = [string]$cfg.data_source.api_url
     if ($url) {
         $headers = @{}
         if ($cfg.data_source.api_token) { $headers.Authorization = "Bearer $($cfg.data_source.api_token)" }
         # API must return {"events":[...]} with the documented fields.
-        $response = Invoke-RestMethod -Uri $url -Headers $headers -Method Get -TimeoutSec 15
+        if (!$cfg.data_source.api_token) { throw 'Chưa cấu hình data_source.api_token. Cần token Excel Daily riêng trên Cloudflare.' }
+        if ($url -notmatch '^https://') { throw 'API phải sử dụng HTTPS.' }
+        $date = ShiftDate $shift
+        $separator = if ($url.Contains('?')) { '&' } else { '?' }
+        $requestUrl = $url + $separator + 'shift=' + [uri]::EscapeDataString($shift) + '&date=' + [uri]::EscapeDataString($date)
+        try {
+            $response = Invoke-RestMethod -Uri $requestUrl -Headers $headers -Method Get -TimeoutSec 15
+        } catch {
+            $statusCode = 0
+            try { $statusCode = [int]$_.Exception.Response.StatusCode } catch {}
+            if ($statusCode -eq 401) { throw 'API 401 Unauthorized: Excel Daily token không khớp EXCEL_DAILY_TOKEN của Worker.' }
+            if ($statusCode -eq 503) { throw 'API 503: Worker chưa cấu hình EXCEL_DAILY_TOKEN hoặc D1 chưa sẵn sàng.' }
+            throw
+        }
         if ($null -eq $response.events) { throw "API không có trường events; không sửa Excel." }
         return @($response.events)
     }
@@ -86,7 +111,7 @@ function EventTime($event) {
 }
 $cfg = Get-Content -LiteralPath $Settings -Raw -Encoding UTF8 | ConvertFrom-Json
 $baseDir = Split-Path -Parent $Settings
-$events = @(FetchEvents $cfg $baseDir)
+$events = @(FetchEvents $cfg $baseDir $Shift)
 # Validate entire input before touching Excel.
 $usable = @()
 foreach ($e in $events) {
