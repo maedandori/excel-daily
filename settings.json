@@ -1,0 +1,44 @@
+{
+  "app": {
+    "run_in_background": true,
+    "start_with_windows": false,
+    "show_status_on_start": false
+  },
+  "workbook": {
+    "filename_pattern": "成形スケジュール*.xlsx",
+    "selected_workbook": "",
+    "choose_if_multiple": true
+  },
+  "sheets": {
+    "day": "1班　昼勤",
+    "night": "1班　夜勤 "
+  },
+  "hotkeys": {
+    "day": "Ctrl+1",
+    "night": "Ctrl+2"
+  },
+  "rows": {
+    "day_start": 9,
+    "night_start": 7,
+    "step": 2,
+    "max_entries": 12
+  },
+  "columns": {
+    "mold_machine": "AN",
+    "mold_time": "AO",
+    "color_machine": "AR",
+    "color_time": "AS",
+    "color_before": "AU",
+    "color_after": "AW"
+  },
+  "data_source": {
+    "events_file": "events.json",
+    "api_url": "",
+    "api_token": ""
+  },
+  "update_policy": {
+    "preserve_past": true,
+    "update_existing_time_only": true,
+    "save_automatically": false
+  }
+}
