@@ -1,0 +1,24 @@
+{
+  "events": [
+    {
+      "id": "schedule-19-001",
+      "shift": "day",
+      "kind": "mold",
+      "machine": "19",
+      "time": "10:30",
+      "scheduled_at": "2026-11-16T10:30:00",
+      "completed": false
+    },
+    {
+      "id": "schedule-14-002",
+      "shift": "night",
+      "kind": "color",
+      "machine": "14",
+      "time": "21:00",
+      "scheduled_at": "2026-11-16T21:00:00",
+      "color_before": "ﾎﾜｲﾄ",
+      "color_after": "ｲｴﾛｰ",
+      "completed": false
+    }
+  ]
+}
