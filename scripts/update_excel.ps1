@@ -91,6 +91,8 @@ $events = @(FetchEvents $cfg $baseDir)
 $usable = @()
 foreach ($e in $events) {
     if ([string]$e.shift -ne $Shift) { continue }
+    # A carried-over event must explicitly target this shift. It retains its
+    # stable event ID and original timestamp, despite the previous shift date.
     if ([string]$e.kind -notin @("mold","color")) { throw "Loại lịch không hợp lệ: $($e.kind)" }
     if (-not $e.id -or -not $e.machine -or -not $e.scheduled_at) {
         throw "Mỗi event cần id, machine, scheduled_at."
@@ -126,13 +128,17 @@ foreach ($e in $ordered) {
     $machineCol = if ($kind -eq "mold") { [string]$cfg.columns.mold_machine } else { [string]$cfg.columns.color_machine }
     $timeCol = if ($kind -eq "mold") { [string]$cfg.columns.mold_time } else { [string]$cfg.columns.color_time }
     $when = [DateTime]::Parse([string]$e.scheduled_at, [System.Globalization.CultureInfo]::InvariantCulture)
-    $past = ($when -le $now) -or ($e.completed -eq $true)
+    $completed = ($e.completed -eq $true)
+    $handoverStatuses = @('100','410','440','490')
+    $carryover = ($e.carryover -eq $true) -and
+        ($handoverStatuses -contains ([string]$e.status_code)) -and (-not $completed)
+    $past = (($when -le $now) -and (-not $carryover)) -or $completed
     $previous = $state[$key]
     if ($previous) {
         $row = [int]$previous.row
         $previousMachine = CellValue $sheet $machineCol $row
         if ($previousMachine -eq $machine) {
-            if ($past -or ([bool]$cfg.update_policy.preserve_past -and
+            if ($past -or ([bool]$cfg.update_policy.preserve_past -and (-not $carryover) -and
                 $previous.scheduled_at -and ([DateTime]::Parse([string]$previous.scheduled_at) -le $now))) {
                 $kept++
                 continue
@@ -148,7 +154,8 @@ foreach ($e in $ordered) {
         # The user edited/deleted a previously tracked row. Do not overwrite it.
         $state.Remove($key)
     }
-    # Do not append historical or completed events when synchronizing later.
+    # Never append historical/completed work, except an explicitly active
+    # handover item with status 100/410/440/490 targeting this shift.
     if ($past) { $kept++; continue }
     $emptyRow = 0
     for ($i=0; $i -lt $count; $i++) {
