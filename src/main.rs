@@ -13,10 +13,11 @@ use std::{
 };
 use serde::Deserialize;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetMessageW, MessageBoxW, RegisterHotKey, UnregisterHotKey, MSG, MB_ICONINFORMATION, MB_OK,
+    GetMessageW, MessageBoxW, MSG, MB_ICONINFORMATION, MB_OK,
     WM_HOTKEY,
 };
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::MOD_CONTROL;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey};
+const MOD_CONTROL: u32 = 0x0002;
 use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 
 const DAY_ID: i32 = 0xE101;
