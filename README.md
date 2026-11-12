@@ -109,3 +109,34 @@ Only the executable is replaced: `settings.json`, `events.json`,
 `excel-daily-state.json`, and existing Excel workbooks are preserved.
 The agent does not need administrator privileges if installed in a folder
 writable by the current user. Windows startup can remain enabled independently.
+
+
+## Fixing HTTP 401 / missing events.json (v0.2.2)
+
+The default \`settings.json\` now points to
+\`https://machine-control.maedandoris.workers.dev/api/excel-daily/events\`.
+This route requires a dedicated Cloudflare Worker secret named
+\`EXCEL_DAILY_TOKEN\`, intentionally **not** the MICS_SYNC_TOKEN and not the
+login password/cookie.
+
+1. Deploy the updated \`machine-control\` Worker source including
+   \`worker/excel-daily-events.js\`. A GitHub commit alone does not make the
+   API available to the live Worker.
+2. Set \`EXCEL_DAILY_TOKEN\` as a secret in the Worker deployment's actual
+   Cloudflare account/environment. For a Wrangler-managed Worker:
+   \`npx wrangler secret put EXCEL_DAILY_TOKEN\`, and paste a long random value.
+3. On the Windows PC only, put the **same exact value** in
+   \`settings.json → data_source.api_token\`. Do not commit this token.
+4. Set \`data_source.api_url\` to the Worker URL (already the default),
+   and leave \`data_source.events_file\` blank.
+5. Restart Excel Daily and press Ctrl+1 or Ctrl+2.
+
+The agent appends \`?shift=day|night&date=YYYY-MM-DD\`. For a night
+shift between midnight and 07:30, the selected date is yesterday.
+The Worker only permits read access to MICS schedule snapshots for this route.
+A 401 means a secret/token mismatch. A 503 can mean a missing Worker secret
+or unavailable D1 data. No Excel cells are changed when the request fails.
+
+Security note: Secret checksums for GitHub self-updates only verify the
+integrity of the downloaded files against the release's published checksum;
+they are **not** a substitute for release signing.
