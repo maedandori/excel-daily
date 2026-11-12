@@ -84,3 +84,28 @@ carryover accurately, and cease sending it as active after completion.
 The machine-control web shift view independently carries live unfinished work
 into the current shift; this version of the Excel agent does **not** automatically
 extract events from the web shift list. Configure a compatible API data feed.
+
+
+## Automatic updates (v0.2.0+)
+
+Configure `auto_update.enabled=true`, `auto_update.check_interval_hours=6` and
+`auto_update.repository="maedandori/excel-daily"` in `settings.json`.
+The agent checks GitHub's **latest published Release** after the first 60 seconds
+and then at the configured interval. A newer semantic version is downloaded
+to a temporary folder and verified against its published SHA-256 checksum.
+Only when no Excel hotkey operation is in progress does the agent launch the
+detached installer, exit, replace its EXE, and restart automatically.
+The old EXE is backed up as `excel-daily.exe.bak`. If replacement or restart
+fails, the helper restores the backup. Logs are written to
+`excel-daily-updater.log`.
+
+**Important:** This is not an automatic download of every commit. A successful
+Windows build must publish a new numbered GitHub Release with both
+`excel-daily.exe` and `excel-daily.exe.sha256`. To ship a future version,
+increase `version` in `Cargo.toml` before pushing. The workflow deliberately
+does not silently overwrite an existing published release.
+
+Only the executable is replaced: `settings.json`, `events.json`,
+`excel-daily-state.json`, and existing Excel workbooks are preserved.
+The agent does not need administrator privileges if installed in a folder
+writable by the current user. Windows startup can remain enabled independently.
