@@ -1,0 +1,21 @@
+[package]
+name = "excel-daily"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_Foundation"] }
+winreg = "0.55"
+
+[build-dependencies]
+ico = "0.4"
+winres = "0.1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
