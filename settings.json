@@ -32,8 +32,8 @@
     "color_after": "AW"
   },
   "data_source": {
-    "events_file": "events.json",
-    "api_url": "",
+    "events_file": "",
+    "api_url": "https://machine-control.maedandoris.workers.dev/api/excel-daily/events",
     "api_token": ""
   },
   "update_policy": {
