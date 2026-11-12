@@ -20,8 +20,8 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, Unregister
 const MOD_CONTROL: u32 = 0x0002;
 use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 
-const DAY_ID: i32 = 0xE101;
-const NIGHT_ID: i32 = 0xE102;
+const DAY_ID: i32 = 0x5101;
+const NIGHT_ID: i32 = 0x5102;
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
