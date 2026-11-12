@@ -51,3 +51,36 @@ On update, existing IDs keep their row and only change their time (while the sch
 - The GitHub workflow builds on Windows; a successful artifact/build is not proof the Excel integration has been tested on your work PC.
 - Keep the app folder writable for its state and log. Avoid putting secrets in publicly committed \`settings.json\`; configure API tokens locally.
 - Ctrl+1 and Ctrl+2 are global and might override other shortcuts. If another app already owns one, the agent reports an error.
+
+
+## Shift handover (status 100, 410, 440, 490)
+
+A MICS change that began in the previous shift but remains unfinished should be
+included in the next shift's event feed with the **same stable id** and the next
+shift name. Example:
+
+\`\`\`json
+{
+  "events": [{
+    "id": "order-19-mold-0113A10C",
+    "shift": "night",
+    "kind": "mold",
+    "machine": "19",
+    "time": "18:30",
+    "scheduled_at": "2026-11-16T18:30:00",
+    "status_code": "100",
+    "carryover": true,
+    "completed": false
+  }]
+}
+\`\`\`
+
+The Excel agent explicitly permits a past scheduled timestamp only when
+\`carryover=true\`, \`completed=false\`, and \`status_code\` is one of
+\`100,410,440,490\`. It writes to the chosen shift sheet without deleting
+historical entries on the previous sheet. Repeated syncs use the same event ID
+to update only the time cell of the existing row. The upstream API must mark
+carryover accurately, and cease sending it as active after completion.
+The machine-control web shift view independently carries live unfinished work
+into the current shift; this version of the Excel agent does **not** automatically
+extract events from the web shift list. Configure a compatible API data feed.
