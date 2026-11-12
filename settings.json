@@ -40,5 +40,10 @@
     "preserve_past": true,
     "update_existing_time_only": true,
     "save_automatically": false
+  },
+  "auto_update": {
+    "enabled": true,
+    "check_interval_hours": 6,
+    "repository": "maedandori/excel-daily"
   }
 }
