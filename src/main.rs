@@ -10,6 +10,8 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     sync::Arc,
     thread,
+    time::Duration,
+    os::windows::process::CommandExt,
 };
 use serde::Deserialize;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -34,6 +36,17 @@ struct AppOptions {
 #[serde(default)]
 struct Config {
     app: AppOptions,
+    auto_update: UpdateOptions,
+}
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+struct UpdateOptions {
+    enabled: bool,
+    check_interval_hours: u64,
+    repository: String,
+}
+impl Default for UpdateOptions {
+    fn default() -> Self { Self { enabled: false, check_interval_hours: 6, repository: "maedandori/excel-daily".to_string() } }
 }
 fn executable_dir() -> PathBuf {
     std::env::current_exe()
@@ -94,6 +107,33 @@ fn call_excel(dir: PathBuf, shift: &'static str, busy: Arc<AtomicBool>) {
     }
     busy.store(false, Ordering::SeqCst);
 }
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+fn check_for_update(dir: &Path, exe: &Path, repo: &str) -> bool {
+    let mut command = Command::new("powershell.exe");
+    let output = command
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(dir.join("check_update.ps1"))
+        .arg("-Executable").arg(exe)
+        .arg("-CurrentVersion").arg(env!("CARGO_PKG_VERSION"))
+        .arg("-Repo").arg(repo)
+        .arg("-PidToWait").arg(std::process::id().to_string())
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .output();
+    match output {
+        Ok(o) => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            if !o.status.success() {
+                log(dir, &format!("Update check failed: {}", String::from_utf8_lossy(&o.stderr)));
+            } else if stdout.contains("UPDATE_READY") {
+                log(dir, "A verified update is staged; exiting for replacement.");
+                return true;
+            }
+        }
+        Err(e) => log(dir, &format!("Update check unavailable: {e}")),
+    }
+    false
+}
 fn main() -> anyhow::Result<()> {
     let dir = executable_dir();
     let cfg_path = dir.join("settings.json");
@@ -103,13 +143,10 @@ fn main() -> anyhow::Result<()> {
     if let Err(e) = set_autostart(cfg.app.start_with_windows, &exe) {
         log(&dir, &format!("autostart registry error: {e}"));
     }
-    let script = dir.join("update_excel.ps1");
-    if !script.exists() {
-        fs::write(&script, include_str!("../scripts/update_excel.ps1"))?;
-    } else {
-        // Keep helper script synced with executable version.
-        fs::write(&script, include_str!("../scripts/update_excel.ps1"))?;
-    }
+    // Embed scripts so the ZIP cannot accidentally ship mismatched helpers.
+    fs::write(dir.join("update_excel.ps1"), include_str!("../scripts/update_excel.ps1"))?;
+    fs::write(dir.join("check_update.ps1"), include_str!("../scripts/check_update.ps1"))?;
+    fs::write(dir.join("apply_update.ps1"), include_str!("../scripts/apply_update.ps1"))?;
     log(&dir, "Agent started.");
     if !cfg.app.run_in_background || cfg.app.show_status_on_start {
         info("Excel Daily đang chạy.\nCtrl+1: ca ngày\nCtrl+2: ca đêm\nThay đổi thiết lập trong settings.json, sau đó khởi động lại ứng dụng.");
@@ -124,6 +161,27 @@ fn main() -> anyhow::Result<()> {
         anyhow::bail!("Global hotkey conflict");
     }
     let busy = Arc::new(AtomicBool::new(false));
+    if cfg.auto_update.enabled {
+        let update_busy = busy.clone();
+        let update_dir = dir.clone();
+        let update_exe = exe.clone();
+        let update_repo = cfg.auto_update.repository.clone();
+        let hours = cfg.auto_update.check_interval_hours.clamp(1, 168);
+        thread::spawn(move || {
+            // Wait until startup is complete. Updates never interrupt Excel writes.
+            thread::sleep(Duration::from_secs(60));
+            loop {
+                if !update_busy.swap(true, Ordering::SeqCst) {
+                    if check_for_update(&update_dir, &update_exe, &update_repo) {
+                        // The detached helper waits for this process to exit.
+                        std::process::exit(0);
+                    }
+                    update_busy.store(false, Ordering::SeqCst);
+                }
+                thread::sleep(Duration::from_secs(hours * 3600));
+            }
+        });
+    }
     let mut msg: MSG = unsafe { std::mem::zeroed() };
     loop {
         let rc = unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) };
