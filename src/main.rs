@@ -24,6 +24,7 @@ use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 
 const DAY_ID: i32 = 0x5101;
 const NIGHT_ID: i32 = 0x5102;
+const REFRESH_ID: i32 = 0x5103;
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -82,32 +83,36 @@ fn set_autostart(enabled: bool, exe: &Path) -> anyhow::Result<()> {
     }
     Ok(())
 }
-fn call_excel(dir: PathBuf, shift: &'static str, busy: Arc<AtomicBool>) {
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+fn call_excel(dir: PathBuf, action: &'static str, busy: Arc<AtomicBool>) {
     let script = dir.join("update_excel.ps1");
     let config = dir.join("settings.json");
-    let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-        .arg(&script)
-        .args(["-Settings"])
-        .arg(&config)
-        .args(["-Shift", shift])
-        .stdin(Stdio::null())
-        .output();
-    match output {
-        Ok(o) => {
-            let out = String::from_utf8_lossy(&o.stdout);
-            let err = String::from_utf8_lossy(&o.stderr);
-            log(&dir, &format!("{} status={} stdout={} stderr={}", shift, o.status, out.trim(), err.trim()));
-            if !o.status.success() { info(&format!("Excel Daily lỗi khi cập nhật {}.\nXem excel-daily.log.", shift)); }
+    let shifts: &[&str] = if action == "refresh_times" { &["day", "night"] } else { &[action] };
+    let mut failures = Vec::new();
+    for shift in shifts {
+        let mut command = Command::new("powershell.exe");
+        command.args(["-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(&script).arg("-Settings").arg(&config).arg("-Shift").arg(shift)
+            .creation_flags(CREATE_NO_WINDOW).stdin(Stdio::null());
+        if action == "refresh_times" { command.arg("-TimeOnly"); }
+        match command.output() {
+            Ok(o) => {
+                let out = String::from_utf8_lossy(&o.stdout);
+                let err = String::from_utf8_lossy(&o.stderr);
+                log(&dir, &format!("{} action={} status={} stdout={} stderr={}", shift, action, o.status, out.trim(), err.trim()));
+                if !o.status.success() { failures.push(*shift); }
+            }
+            Err(e) => {
+                log(&dir, &format!("{} action={} powershell failed: {}", shift, action, e));
+                failures.push(*shift);
+            }
         }
-        Err(e) => {
-            log(&dir, &format!("powershell failed: {e}"));
-            info("Không chạy được PowerShell. Xem excel-daily.log.");
-        }
+    }
+    if !failures.is_empty() {
+        info(&format!("Excel Daily lỗi khi cập nhật {}. Xem excel-daily.log.", failures.join(", ")));
     }
     busy.store(false, Ordering::SeqCst);
 }
-const CREATE_NO_WINDOW: u32 = 0x08000000;
 fn check_for_update(dir: &Path, exe: &Path, repo: &str) -> bool {
     let mut command = Command::new("powershell.exe");
     let output = command
@@ -149,15 +154,17 @@ fn main() -> anyhow::Result<()> {
     fs::write(dir.join("apply_update.ps1"), include_str!("../scripts/apply_update.ps1"))?;
     log(&dir, "Agent started.");
     if !cfg.app.run_in_background || cfg.app.show_status_on_start {
-        info("Excel Daily đang chạy.\nCtrl+1: ca ngày\nCtrl+2: ca đêm\nThay đổi thiết lập trong settings.json, sau đó khởi động lại ứng dụng.");
+        info("Excel Daily đang chạy.\nCtrl+1: ca ngày\nCtrl+2: ca đêm\nCtrl+3: cập nhật giờ chưa hoàn thành (cả 2 ca)\nThay đổi thiết lập trong settings.json, sau đó khởi động lại ứng dụng.");
     }
     let day_ok = unsafe { RegisterHotKey(std::ptr::null_mut(), DAY_ID, MOD_CONTROL as u32, '1' as u32) };
     let night_ok = unsafe { RegisterHotKey(std::ptr::null_mut(), NIGHT_ID, MOD_CONTROL as u32, '2' as u32) };
-    if day_ok == 0 || night_ok == 0 {
+    let refresh_ok = unsafe { RegisterHotKey(std::ptr::null_mut(), REFRESH_ID, MOD_CONTROL as u32, '3' as u32) };
+    if day_ok == 0 || night_ok == 0 || refresh_ok == 0 {
         log(&dir, "RegisterHotKey failed: hotkey already in use.");
         if day_ok != 0 { unsafe { UnregisterHotKey(std::ptr::null_mut(), DAY_ID); } }
         if night_ok != 0 { unsafe { UnregisterHotKey(std::ptr::null_mut(), NIGHT_ID); } }
-        info("Ctrl+1 hoặc Ctrl+2 đã được ứng dụng khác sử dụng.");
+        if refresh_ok != 0 { unsafe { UnregisterHotKey(std::ptr::null_mut(), REFRESH_ID); } }
+        info("Ctrl+1, Ctrl+2 hoặc Ctrl+3 đã được ứng dụng khác sử dụng.");
         anyhow::bail!("Global hotkey conflict");
     }
     let busy = Arc::new(AtomicBool::new(false));
@@ -190,6 +197,7 @@ fn main() -> anyhow::Result<()> {
             let shift = match msg.wParam as i32 {
                 DAY_ID => "day",
                 NIGHT_ID => "night",
+                REFRESH_ID => "refresh_times",
                 _ => continue,
             };
             if !busy.swap(true, Ordering::SeqCst) {
@@ -204,6 +212,7 @@ fn main() -> anyhow::Result<()> {
     unsafe {
         UnregisterHotKey(std::ptr::null_mut(), DAY_ID);
         UnregisterHotKey(std::ptr::null_mut(), NIGHT_ID);
+        UnregisterHotKey(std::ptr::null_mut(), REFRESH_ID);
     }
     Ok(())
 }

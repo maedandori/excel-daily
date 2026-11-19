@@ -9,7 +9,7 @@ It does **not** edit an XLSX file directly or open/save a separate copy.
 2. Extract \`excel-daily-windows.zip\` to a writable folder, e.g. \`C:\ExcelDaily\`.
 3. Set \`settings.json\`. Microsoft Excel 2013+ (desktop, Windows) is required.
 4. Start \`excel-daily.exe\` once. It installs a user-level Run registry entry only when \`app.start_with_windows=true\`.
-5. Keep Excel open, then use **Ctrl+1** (day) or **Ctrl+2** (night). Check \`excel-daily.log\` for diagnostics.
+5. Keep Excel open, then use **Ctrl+1** (day) or **Ctrl+2** (night), or **Ctrl+3** (update pending times only in both shift sheets). Check \`excel-daily.log\` for diagnostics.
 6. To turn off startup: set \`start_with_windows=false\` and restart the EXE once.
 7. To stop the background app, end **excel-daily.exe** in Task Manager. This initial version does not provide a tray menu.
 
@@ -140,3 +140,7 @@ or unavailable D1 data. No Excel cells are changed when the request fails.
 Security note: Secret checksums for GitHub self-updates only verify the
 integrity of the downloaded files against the release's published checksum;
 they are **not** a substitute for release signing.
+
+## Ctrl+3, silent mode and UTF-8 (v0.2.3)
+
+Ctrl+3 checks the day and night sheets and only changes existing **time cells** for events previously managed by Excel Daily whose scheduled time has not passed and that are not marked completed. It never adds entries, changes machine or color text, or edits entries with a past planned time. Ctrl+1 and Ctrl+2 retain add/update functionality and may repair clearly garbled Japanese color text on tracked rows without altering ordinary manually edited labels. HTTP JSON is explicitly decoded as UTF-8, the embedded script is UTF-8 with BOM for Windows PowerShell 5.1, and PowerShell runs without an opened CMD window. No settings.json change is required.

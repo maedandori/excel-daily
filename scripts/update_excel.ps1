@@ -1,6 +1,7 @@
-param(
+﻿param(
     [Parameter(Mandatory=$true)][string]$Settings,
-    [Parameter(Mandatory=$true)][ValidateSet("day","night")][string]$Shift
+    [Parameter(Mandatory=$true)][ValidateSet("day","night")][string]$Shift,
+    [switch]$TimeOnly
 )
 $ErrorActionPreference = "Stop"
 # PowerShell 5.1 otherwise writes stdout/stderr using the OEM code page,
@@ -85,12 +86,17 @@ function FetchEvents($cfg, [string]$baseDir, [string]$shift) {
         $separator = if ($url.Contains('?')) { '&' } else { '?' }
         $requestUrl = $url + $separator + 'shift=' + [uri]::EscapeDataString($shift) + '&date=' + [uri]::EscapeDataString($date)
         try {
-            $response = Invoke-RestMethod -Uri $requestUrl -Headers $headers -Method Get -TimeoutSec 15
+                        # Decode original HTTP bytes, not Windows PowerShell 5.1's legacy text charset.
+            $httpResponse = Invoke-WebRequest -UseBasicParsing -Uri $requestUrl -Headers $headers -Method Get -TimeoutSec 15
+            if (-not $httpResponse.RawContentStream) { throw 'API returned no response bytes.' }
+            $utf8 = New-Object System.Text.UTF8Encoding($false, $true)
+            $payload = $utf8.GetString($httpResponse.RawContentStream.ToArray())
+            $response = $payload | ConvertFrom-Json
         } catch {
             $statusCode = 0
             try { $statusCode = [int]$_.Exception.Response.StatusCode } catch {}
             if ($statusCode -eq 401) { throw 'API 401 Unauthorized: Excel Daily token không khớp EXCEL_DAILY_TOKEN của Worker.' }
-            if ($statusCode -eq 503) { throw 'API 503: Worker chưa cấu hình EXCEL_DAILY_TOKEN hoặc D1 chưa sẵn sàng.' }
+            if ($statusCode -eq 503) { throw 'API 503: Worker chưa cấu hình EXCEL_DAILY_TOKEN hoặc nguồn MICS chưa sẵn sàng.' }
             throw
         }
         if ($null -eq $response.events) { throw "API không có trường events; không sửa Excel." }
@@ -103,6 +109,26 @@ function FetchEvents($cfg, [string]$baseDir, [string]$shift) {
     $json = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($null -eq $json.events) { throw "events_file cần có danh sách events." }
     return @($json.events)
+}
+# Repair only visibly corrupted color labels in rows already tracked by Excel Daily.
+function LooksMojibake([string]$value) {
+    if ([string]::IsNullOrWhiteSpace($value)) { return $false }
+    return ($value.Contains([char]0xFFFD) -or $value.Contains([char]0x00EF) -or
+        $value.Contains([char]0x00E3) -or $value.Contains([char]0x00C3) -or
+        $value.Contains([char]0x00C2) -or $value.Contains('縺') -or $value.Contains('繧'))
+}
+function RepairColorIfBroken($sheet, $cfg, $event, [int]$row) {
+    $pairs = @(
+        @([string]$cfg.columns.color_before,[string]$event.color_before),
+        @([string]$cfg.columns.color_after,[string]$event.color_after)
+    )
+    foreach ($pair in $pairs) {
+        $column = [string]$pair[0]
+        $correct = [string]$pair[1]
+        if ($column -and $correct -and (LooksMojibake (CellValue $sheet $column $row))) {
+            PutValue $sheet $column $row $correct
+        }
+    }
 }
 function EventTime($event) {
     $t = [string]$event.time
@@ -159,12 +185,23 @@ foreach ($e in $ordered) {
         ($handoverStatuses -contains ([string]$e.status_code)) -and (-not $completed)
     $past = (($when -le $now) -and (-not $carryover)) -or $completed
     $previous = $state[$key]
+    if ($TimeOnly -and -not $previous) { $kept++; continue }
+    if ($previous) {
+        $row = [int]$previous.row
+        if ($row -lt $start -or (($row-$start) % $step) -ne 0 -or
+            $row -ge ($start + $count*$step)) {
+            if ($TimeOnly) { $kept++; continue }
+            $state.Remove($key)
+            $previous = $null
+        }
+    }
     if ($previous) {
         $row = [int]$previous.row
         $previousMachine = CellValue $sheet $machineCol $row
         if ($previousMachine -eq $machine) {
             if ($past -or ([bool]$cfg.update_policy.preserve_past -and (-not $carryover) -and
                 $previous.scheduled_at -and ([DateTime]::Parse([string]$previous.scheduled_at) -le $now))) {
+                if (-not $TimeOnly -and $kind -eq 'color') { RepairColorIfBroken $sheet $cfg $e $row }
                 $kept++
                 continue
             }
@@ -173,12 +210,15 @@ foreach ($e in $ordered) {
                 PutValue $sheet $timeCol $row $newTime
                 $changed++
             }
+            if (-not $TimeOnly -and $kind -eq 'color') { RepairColorIfBroken $sheet $cfg $e $row }
             $state[$key] = @{row=$row; scheduled_at=[string]$e.scheduled_at}
             continue
         }
         # The user edited/deleted a previously tracked row. Do not overwrite it.
+        if ($TimeOnly) { $kept++; continue }
         $state.Remove($key)
     }
+    if ($TimeOnly) { $kept++; continue }
     # Never append historical/completed work, except an explicitly active
     # handover item with status 100/410/440/490 targeting this shift.
     if ($past) { $kept++; continue }
