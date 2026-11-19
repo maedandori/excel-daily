@@ -38,7 +38,12 @@ struct AppOptions {
 struct Config {
     app: AppOptions,
     auto_update: UpdateOptions,
+    agent: AgentOptions,
 }
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+struct AgentOptions { remote_update: bool }
+impl Default for AgentOptions { fn default()->Self{Self{remote_update:true}} }
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 struct UpdateOptions {
@@ -139,6 +144,21 @@ fn check_for_update(dir: &Path, exe: &Path, repo: &str) -> bool {
     }
     false
 }
+fn agent_presence(dir: &Path,command_id: Option<u64>,status: Option<&str>)->Option<serde_json::Value>{
+    let mut p=Command::new("powershell.exe");
+    p.args(["-NoProfile","-WindowStyle","Hidden","-ExecutionPolicy","Bypass","-File"])
+     .arg(dir.join("agent_presence.ps1")).arg("-Settings").arg(dir.join("settings.json"))
+     .arg("-Version").arg(env!("CARGO_PKG_VERSION"))
+     .creation_flags(CREATE_NO_WINDOW).stdin(Stdio::null());
+    if let (Some(id),Some(status))=(command_id,status) {
+       p.arg("-CommandId").arg(id.to_string()).arg("-CommandStatus").arg(status);
+    }
+    match p.output(){
+       Ok(out) if out.status.success()=>serde_json::from_slice(&out.stdout).ok(),
+       Ok(out)=>{log(dir,&format!("Presence failed: {}",String::from_utf8_lossy(&out.stderr).trim()));None},
+       Err(e)=>{log(dir,&format!("Presence invocation failed: {e}"));None}
+    }
+}
 fn main() -> anyhow::Result<()> {
     let dir = executable_dir();
     let cfg_path = dir.join("settings.json");
@@ -150,6 +170,8 @@ fn main() -> anyhow::Result<()> {
     }
     // Embed scripts so the ZIP cannot accidentally ship mismatched helpers.
     fs::write(dir.join("update_excel.ps1"), include_str!("../scripts/update_excel.ps1"))?;
+    fs::write(dir.join("round_time.ps1"), include_str!("../scripts/round_time.ps1"))?;
+    fs::write(dir.join("agent_presence.ps1"), include_str!("../scripts/agent_presence.ps1"))?;
     fs::write(dir.join("check_update.ps1"), include_str!("../scripts/check_update.ps1"))?;
     fs::write(dir.join("apply_update.ps1"), include_str!("../scripts/apply_update.ps1"))?;
     log(&dir, "Agent started.");
@@ -186,6 +208,30 @@ fn main() -> anyhow::Result<()> {
                     update_busy.store(false, Ordering::SeqCst);
                 }
                 thread::sleep(Duration::from_secs(hours * 3600));
+            }
+        });
+    }
+    if cfg.agent.remote_update {
+        let dir2=dir.clone();
+        let exe2=exe.clone();
+        let repo=cfg.auto_update.repository.clone();
+        let busy2=busy.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_secs(15));
+            loop {
+                if !busy2.swap(true,Ordering::SeqCst) {
+                    if let Some(res)=agent_presence(&dir2,None,None){
+                        if let Some(cmd)=res["update_command_id"].as_u64().filter(|v|*v>0){
+                            log(&dir2,&format!("Admin requested update id={cmd}"));
+                            let staged=check_for_update(&dir2,&exe2,&repo);
+                            let result=if staged {"staged"}else{"failed"};
+                            let _=agent_presence(&dir2,Some(cmd),Some(result));
+                            if staged {std::process::exit(0);}
+                        }
+                    }
+                    busy2.store(false,Ordering::SeqCst);
+                }
+                thread::sleep(Duration::from_secs(90));
             }
         });
     }
