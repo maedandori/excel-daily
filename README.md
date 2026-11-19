@@ -144,3 +144,30 @@ they are **not** a substitute for release signing.
 ## Ctrl+3, silent mode and UTF-8 (v0.2.3)
 
 Ctrl+3 checks the day and night sheets and only changes existing **time cells** for events previously managed by Excel Daily whose scheduled time has not passed and that are not marked completed. It never adds entries, changes machine or color text, or edits entries with a past planned time. Ctrl+1 and Ctrl+2 retain add/update functionality and may repair clearly garbled Japanese color text on tracked rows without altering ordinary manually edited labels. HTTP JSON is explicitly decoded as UTF-8, the embedded script is UTF-8 with BOM for Windows PowerShell 5.1, and PowerShell runs without an opened CMD window. No settings.json change is required.
+
+## Excel Daily v0.3.0 — two Windows EXEs, Admin updates, ten-minute rounding
+
+**First installation:** download the complete `excel-daily-windows.zip` Release and extract
+both `excel-daily.exe` (silent hotkey Agent) and `excel-daily-settings.exe` (Settings GUI)
+into the same writable folder. Keep your existing `settings.json`,
+`excel-daily-state.json`, `excel-daily-agent-id.txt`, and Excel workbooks. If updating
+from v0.2.3, use the full ZIP once so that the new Settings EXE is installed too.
+
+- Settings EXE edits the workbook, sheet names, API URL and token, device display name,
+  Windows startup, automatic updates, and permission to receive Admin update requests.
+  It can save, start/restart, and stop the local Agent or request a GitHub update.
+- The Agent sends authenticated heartbeats to Machine-Control using the existing
+  `data_source.api_token`; no new secret is needed. Admin can view individual
+  device/version/online state and request a newer published Release for that device.
+- The Agent checks remote update requests about every 90 seconds, only when not
+  editing Excel. The existing periodic GitHub auto-update is independent and optional.
+- Releases package **both EXEs** and a SHA-256 checksum for the complete ZIP.
+  The updater stages and verifies the ZIP, then replaces both EXEs. It retains
+  backups beside them and never overwrites local settings, state or Excel files.
+- All hotkeys round **up** the displayed time to the next 10-minute boundary:
+  `5:01 -> 5:10`, `5:10 -> 5:10`, `5:59 -> 6:00`, `23:59 -> 0:00`.
+  Original MICS timestamps remain unchanged for completed/past-event protection.
+- In the Excel Daily feed, if a schedule transition changes **both mold and color**,
+  the transition is recorded as mold only, not duplicated in the color table.
+  Color-only changes remain visible. Old already-written Excel rows are preserved
+  (no destructive automatic deletion).
