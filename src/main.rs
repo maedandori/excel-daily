@@ -16,15 +16,18 @@ use std::{
 use serde::Deserialize;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetMessageW, MessageBoxW, MSG, MB_ICONINFORMATION, MB_OK,
-    WM_HOTKEY,
+    WM_HOTKEY, MB_ICONQUESTION, MB_YESNO, IDYES,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey};
 const MOD_CONTROL: u32 = 0x0002;
 use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+mod hotkeys;
+use hotkeys::{HotkeyOptions,validate_hotkeys};
 
 const DAY_ID: i32 = 0x5101;
 const NIGHT_ID: i32 = 0x5102;
 const REFRESH_ID: i32 = 0x5103;
+const TOMORROW_ID: i32 = 0x5104;
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -39,6 +42,7 @@ struct Config {
     app: AppOptions,
     auto_update: UpdateOptions,
     agent: AgentOptions,
+    hotkeys: HotkeyOptions,
 }
 #[derive(Debug, Deserialize)]
 #[serde(default)]
@@ -89,12 +93,22 @@ fn set_autostart(enabled: bool, exe: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+fn confirm_tomorrow() -> bool {
+    let msg = wide("Ghi lịch thay khuôn / thay màu NGÀY MAI (cả ca ngày và ca đêm) vào file Excel ĐANG MỞ?\\nHãy chắc chắn đây là workbook dành cho ngày mai. Các dòng cũ sẽ không bị ghi đè.");
+    let title=wide("Excel Daily - Tomorrow / 翌日の予定");
+    unsafe { MessageBoxW(std::ptr::null_mut(),msg.as_ptr(),title.as_ptr(),MB_YESNO|MB_ICONQUESTION)==IDYES }
+}
 fn call_excel(dir: PathBuf, action: &'static str, busy: Arc<AtomicBool>) {
+    if action=="tomorrow" && !confirm_tomorrow() {
+        log(&dir,"Tomorrow import cancelled by operator.");
+        busy.store(false,Ordering::SeqCst);
+        return;
+    }
     let script = dir.join("update_excel.ps1");
     let config = dir.join("settings.json");
     let busy_file=dir.join("excel-daily-busy.lock");
     let _=fs::write(&busy_file,std::process::id().to_string());
-    let shifts: &[&str] = if action == "refresh_times" { &["day", "night"] } else { &[action] };
+    let shifts: &[&str] = if action == "refresh_times" || action=="tomorrow" { &["day", "night"] } else { &[action] };
     let mut failures = Vec::new();
     for shift in shifts {
         let mut command = Command::new("powershell.exe");
@@ -102,6 +116,7 @@ fn call_excel(dir: PathBuf, action: &'static str, busy: Arc<AtomicBool>) {
             .arg(&script).arg("-Settings").arg(&config).arg("-Shift").arg(shift)
             .creation_flags(CREATE_NO_WINDOW).stdin(Stdio::null());
         if action == "refresh_times" { command.arg("-TimeOnly"); }
+        if action == "tomorrow" { command.arg("-DateOffset").arg("1"); }
         match command.output() {
             Ok(o) => {
                 let out = String::from_utf8_lossy(&o.stdout);
@@ -178,20 +193,33 @@ fn main() -> anyhow::Result<()> {
     fs::write(dir.join("agent_presence.ps1"), include_str!("../scripts/agent_presence.ps1"))?;
     fs::write(dir.join("check_update.ps1"), include_str!("../scripts/check_update.ps1"))?;
     fs::write(dir.join("apply_update.ps1"), include_str!("../scripts/apply_update.ps1"))?;
-    log(&dir, "Agent started.");
+    let version_path=dir.join("excel-daily-version.json");
+    let version_info=serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id()});
+    let _=fs::write(&version_path,serde_json::to_string_pretty(&version_info)?);
+    log(&dir, &format!("Agent started. v{}",env!("CARGO_PKG_VERSION")));
     if !cfg.app.run_in_background || cfg.app.show_status_on_start {
-        info("Excel Daily đang chạy.\nCtrl+1: ca ngày\nCtrl+2: ca đêm\nCtrl+3: cập nhật giờ chưa hoàn thành (cả 2 ca)\nThay đổi thiết lập trong settings.json, sau đó khởi động lại ứng dụng.");
+        info(&format!("Excel Daily v{} đang chạy.\\n{}: ca ngày\\n{}: ca đêm\\n{}: chỉ cập nhật giờ\\n{}: lịch NGÀY MAI (cả 2 ca)",env!("CARGO_PKG_VERSION"),cfg.hotkeys.day,cfg.hotkeys.night,cfg.hotkeys.refresh,cfg.hotkeys.tomorrow));
     }
-    let day_ok = unsafe { RegisterHotKey(std::ptr::null_mut(), DAY_ID, MOD_CONTROL as u32, '1' as u32) };
-    let night_ok = unsafe { RegisterHotKey(std::ptr::null_mut(), NIGHT_ID, MOD_CONTROL as u32, '2' as u32) };
-    let refresh_ok = unsafe { RegisterHotKey(std::ptr::null_mut(), REFRESH_ID, MOD_CONTROL as u32, '3' as u32) };
-    if day_ok == 0 || night_ok == 0 || refresh_ok == 0 {
-        log(&dir, "RegisterHotKey failed: hotkey already in use.");
-        if day_ok != 0 { unsafe { UnregisterHotKey(std::ptr::null_mut(), DAY_ID); } }
-        if night_ok != 0 { unsafe { UnregisterHotKey(std::ptr::null_mut(), NIGHT_ID); } }
-        if refresh_ok != 0 { unsafe { UnregisterHotKey(std::ptr::null_mut(), REFRESH_ID); } }
-        info("Ctrl+1, Ctrl+2 hoặc Ctrl+3 đã được ứng dụng khác sử dụng.");
-        anyhow::bail!("Global hotkey conflict");
+    let shortcuts=match validate_hotkeys(&cfg.hotkeys){
+        Ok(codes)=>codes,
+        Err(e)=>{log(&dir,&format!("Hotkey configuration error: {e}"));info(&e);anyhow::bail!(e)}
+    };
+    let configured=[
+        (DAY_ID,cfg.hotkeys.day.as_str(),shortcuts[0]),
+        (NIGHT_ID,cfg.hotkeys.night.as_str(),shortcuts[1]),
+        (REFRESH_ID,cfg.hotkeys.refresh.as_str(),shortcuts[2]),
+        (TOMORROW_ID,cfg.hotkeys.tomorrow.as_str(),shortcuts[3])
+    ];
+    let mut registered=Vec::new();
+    for (id,label,shortcut) in configured {
+        let ok=unsafe{RegisterHotKey(std::ptr::null_mut(),id,shortcut.modifiers,shortcut.key)};
+        if ok==0 {
+            for prev in registered {unsafe{UnregisterHotKey(std::ptr::null_mut(),prev)};}
+            let msg=format!("Cannot register hotkey {}. It may already be used by another app. Change it in Excel Daily Settings.",label);
+            log(&dir,&msg);info(&msg);
+            anyhow::bail!(msg);
+        }
+        registered.push(id);
     }
     let busy = Arc::new(AtomicBool::new(false));
     if cfg.auto_update.enabled {
@@ -239,6 +267,26 @@ fn main() -> anyhow::Result<()> {
             }
         });
     }
+    // Settings UI requests are processed by this Agent under the same busy lock
+    // as global hotkeys. Never edit the workbook concurrently.
+    {
+        let queue_dir=dir.clone();
+        let queue_busy=busy.clone();
+        thread::spawn(move||loop {
+            let p=queue_dir.join("excel-daily-command.json");
+            if p.is_file() && !queue_busy.swap(true,Ordering::SeqCst) {
+                let action=fs::read_to_string(&p).ok().and_then(|s|serde_json::from_str::<serde_json::Value>(&s).ok());
+                let _=fs::remove_file(&p);
+                if action.as_ref().and_then(|v|v["action"].as_str())==Some("tomorrow"){
+                    call_excel(queue_dir.clone(),"tomorrow",queue_busy.clone());
+                } else {
+                    queue_busy.store(false,Ordering::SeqCst);
+                    log(&queue_dir,"Invalid Settings command ignored.");
+                }
+            }
+            thread::sleep(Duration::from_secs(2));
+        });
+    }
     let mut msg: MSG = unsafe { std::mem::zeroed() };
     loop {
         let rc = unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) };
@@ -248,6 +296,7 @@ fn main() -> anyhow::Result<()> {
                 DAY_ID => "day",
                 NIGHT_ID => "night",
                 REFRESH_ID => "refresh_times",
+                TOMORROW_ID => "tomorrow",
                 _ => continue,
             };
             if !busy.swap(true, Ordering::SeqCst) {
@@ -263,6 +312,7 @@ fn main() -> anyhow::Result<()> {
         UnregisterHotKey(std::ptr::null_mut(), DAY_ID);
         UnregisterHotKey(std::ptr::null_mut(), NIGHT_ID);
         UnregisterHotKey(std::ptr::null_mut(), REFRESH_ID);
+        UnregisterHotKey(std::ptr::null_mut(), TOMORROW_ID);
     }
     Ok(())
 }
