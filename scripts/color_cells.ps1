@@ -1,4 +1,4 @@
-# Excel uses VBA/OLE RGB order: red + green*256 + blue*65536.
+﻿# Excel uses VBA/OLE RGB order: red + green*256 + blue*65536.
 function ExcelDailyColorStyle([string]$label){
  if([string]::IsNullOrWhiteSpace($label)){return $null}
  $n=$label.Normalize([Text.NormalizationForm]::FormKC).ToUpperInvariant() -replace '[\s　・･]',''

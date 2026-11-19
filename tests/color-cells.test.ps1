@@ -1,4 +1,4 @@
-$ErrorActionPreference='Stop'
+﻿$ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot '../scripts/color_cells.ps1')
 $cases=@(
  @('ｼｰﾙｽﾞGy',0xB5B5B5),@('ｸﾘｱ',0xFFF0DF),@('ｲｵﾝW',0xFFFFFF),
