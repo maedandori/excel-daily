@@ -171,3 +171,19 @@ from v0.2.3, use the full ZIP once so that the new Settings EXE is installed too
   the transition is recorded as mold only, not duplicated in the color table.
   Color-only changes remain visible. Old already-written Excel rows are preserved
   (no destructive automatic deletion).
+
+## Excel Daily v0.3.1: fast writes and fill colors
+
+The Agent caches Excel COM cell references for one operation, scans available
+slots only once per table, and temporarily disables ScreenUpdating/EnableEvents
+during writes. Both settings are restored in a finally block, including on
+errors; calculation mode is not changed. It preserves merged cells, open
+workbooks and the original row tracking state.
+
+Ctrl+1/Ctrl+2 automatically fill the entire merged color-before/color-after
+cells with the recognized Japanese color; dark colors use white font. Clear
+(クリア) is displayed as pale blue. Unknown colors retain template formatting.
+Ctrl+3 remains time-only and does not change color cells. A broken label
+repaired by the existing UTF-8 fix receives matching formatting.
+Optional `settings.json` flags `formatting.fast_excel_writes` and
+`formatting.color_cells` default to true when absent.

@@ -32,7 +32,7 @@ jobs:
       - name: Validate PowerShell syntax
         shell: pwsh
         run: |
-          foreach ($file in @('scripts/update_excel.ps1','scripts/check_update.ps1','scripts/apply_update.ps1','scripts/round_time.ps1','scripts/agent_presence.ps1','scripts/settings_gui.ps1')) {
+          foreach ($file in @('scripts/update_excel.ps1','scripts/check_update.ps1','scripts/apply_update.ps1','scripts/round_time.ps1','scripts/agent_presence.ps1','scripts/settings_gui.ps1','scripts/color_cells.ps1')) {
             $tokens=$null; $errors=$null
             [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file),[ref]$tokens,[ref]$errors) | Out-Null
             if ($errors.Count -gt 0) { $errors | Format-List | Out-String | Write-Error; exit 1 }
@@ -40,6 +40,9 @@ jobs:
       - name: Test 10 minute rounding in Windows PowerShell
         shell: powershell
         run: .\\tests\\round-time.test.ps1
+      - name: Test Japanese color palette
+        shell: powershell
+        run: .\tests\color-cells.test.ps1
       - name: Build release with embedded icon
         run: cargo build --release --target x86_64-pc-windows-msvc
       - name: Package

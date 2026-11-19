@@ -45,5 +45,9 @@
     "enabled": true,
     "check_interval_hours": 6,
     "repository": "maedandori/excel-daily"
+  },
+  "formatting": {
+    "fast_excel_writes": true,
+    "color_cells": true
   }
 }

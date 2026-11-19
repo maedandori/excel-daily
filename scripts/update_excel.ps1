@@ -11,16 +11,34 @@ $OutputEncoding = [Console]::OutputEncoding
 Add-Type -AssemblyName Microsoft.VisualBasic
 Add-Type -AssemblyName System.Windows.Forms
 
-function CellValue($sheet, [string]$column, [int]$row) {
-    $v = $sheet.Range("$column$row").Value2
-    if ($null -eq $v) { return "" }
-    return [string]$v
+# Cache Excel COM references; merged cells use their actual top-left value cell.
+$script:ExcelCells=@{}
+function ExcelCell($sheet,[string]$column,[int]$row){
+ $address="$column$row"
+ if(-not $script:ExcelCells.ContainsKey($address)){
+  $cell=$sheet.Range($address)
+  if($cell.MergeCells){$cell=$cell.MergeArea.Cells.Item(1,1)}
+  $script:ExcelCells[$address]=$cell
+ }
+ return $script:ExcelCells[$address]
 }
-function PutValue($sheet, [string]$column, [int]$row, $value) {
-    # Merged cells have the writable value in the top-left cell.
-    $target = $sheet.Range("$column$row")
-    if ($target.MergeCells) { $target = $target.MergeArea.Cells.Item(1,1) }
-    $target.Value2 = $value
+function CellValue($sheet,[string]$column,[int]$row){
+ $v=(ExcelCell $sheet $column $row).Value2
+ if($null -eq $v){return ""}
+ return [string]$v
+}
+function PutValue($sheet,[string]$column,[int]$row,$value){
+ (ExcelCell $sheet $column $row).Value2=$value
+}
+function PaintColorCell($sheet,[string]$column,[int]$row,[string]$label){
+ if(-not $script:ColorCellsEnabled -or -not $column){return $false}
+ $style=ExcelDailyColorStyle $label
+ if($null -eq $style){return $false}
+ $cell=ExcelCell $sheet $column $row
+ if($cell.MergeCells){$cell=$cell.MergeArea}
+ $cell.Interior.Color=[int]$style.Background
+ $cell.Font.Color=[int]$style.Foreground
+ return $true
 }
 function NormalizeName([string]$name) { return $name.Trim().Replace([char]0x3000, ' ') }
 function PickWorkbook($excel, $config) {
@@ -127,6 +145,7 @@ function RepairColorIfBroken($sheet, $cfg, $event, [int]$row) {
         $correct = [string]$pair[1]
         if ($column -and $correct -and (LooksMojibake (CellValue $sheet $column $row))) {
             PutValue $sheet $column $row $correct
+            $null=PaintColorCell $sheet $column $row $correct
         }
     }
 }
@@ -137,7 +156,10 @@ function EventTime($event) {
     try { return RoundEventTimeUp $t }
     catch { throw "Giờ không hợp lệ ($($event.id)): $t" }
 }
+. (Join-Path $PSScriptRoot 'color_cells.ps1')
 $cfg = Get-Content -LiteralPath $Settings -Raw -Encoding UTF8 | ConvertFrom-Json
+$script:ColorCellsEnabled=($null -eq $cfg.formatting -or $cfg.formatting.color_cells -ne $false)
+$fastWrites=($null -eq $cfg.formatting -or $cfg.formatting.fast_excel_writes -ne $false)
 $baseDir = Split-Path -Parent $Settings
 $events = @(FetchEvents $cfg $baseDir $Shift)
 # Validate entire input before touching Excel.
@@ -173,6 +195,15 @@ $added = 0
 $kept = 0
 $now = [DateTime]::Now
 $ordered = @($usable | Sort-Object scheduled_at)
+$started=[DateTime]::UtcNow
+$colored=0
+$nextSlot=@{mold=0;color=0}
+$screenChanged=$false;$eventsChanged=$false
+if($fastWrites){
+ try{$oldScreen=[bool]$excel.ScreenUpdating;$excel.ScreenUpdating=$false;$screenChanged=$true}catch{}
+ try{$oldEvents=[bool]$excel.EnableEvents;$excel.EnableEvents=$false;$eventsChanged=$true}catch{}
+}
+try {
 foreach ($e in $ordered) {
     $kind = [string]$e.kind
     $machine = [string]$e.machine
@@ -225,10 +256,11 @@ foreach ($e in $ordered) {
     # handover item with status 100/410/440/490 targeting this shift.
     if ($past) { $kept++; continue }
     $emptyRow = 0
-    for ($i=0; $i -lt $count; $i++) {
+    for ($i=[int]$nextSlot[$kind]; $i -lt $count; $i++) {
         $row = $start + ($i*$step)
         if ((CellValue $sheet $machineCol $row) -eq "" -and (CellValue $sheet $timeCol $row) -eq "") {
             $emptyRow = $row
+            $nextSlot[$kind]=$i+1
             break
         }
     }
@@ -239,8 +271,16 @@ foreach ($e in $ordered) {
     PutValue $sheet $machineCol $emptyRow $machine
     PutValue $sheet $timeCol $emptyRow (EventTime $e)
     if ($kind -eq "color") {
-        if ($e.color_before) { PutValue $sheet ([string]$cfg.columns.color_before) $emptyRow ([string]$e.color_before) }
-        if ($e.color_after) { PutValue $sheet ([string]$cfg.columns.color_after) $emptyRow ([string]$e.color_after) }
+        if ($e.color_before) {
+            $col=[string]$cfg.columns.color_before
+            PutValue $sheet $col $emptyRow ([string]$e.color_before)
+            if (PaintColorCell $sheet $col $emptyRow ([string]$e.color_before)) { $colored++ }
+        }
+        if ($e.color_after) {
+            $col=[string]$cfg.columns.color_after
+            PutValue $sheet $col $emptyRow ([string]$e.color_after)
+            if (PaintColorCell $sheet $col $emptyRow ([string]$e.color_after)) { $colored++ }
+        }
     }
     $state[$key] = @{row=$emptyRow; scheduled_at=[string]$e.scheduled_at}
     $added++
@@ -251,4 +291,10 @@ $json = ConvertTo-Json -InputObject $state -Depth 5
 if ($cfg.update_policy.save_automatically -eq $true) {
     $book.Save()
 }
-Write-Output "Workbook=$($book.Name); sheet=$($sheet.Name); added=$added; updated_times=$changed; preserved=$kept; excel_saved=$($cfg.update_policy.save_automatically)"
+$elapsed=[int]([DateTime]::UtcNow-$started).TotalMilliseconds
+Write-Output "Workbook=$($book.Name); sheet=$($sheet.Name); added=$added; updated_times=$changed; colored_cells=$colored; preserved=$kept; elapsed_ms=$elapsed; excel_saved=$($cfg.update_policy.save_automatically)"
+} finally {
+ if($eventsChanged){try{$excel.EnableEvents=$oldEvents}catch{}}
+ if($screenChanged){try{$excel.ScreenUpdating=$oldScreen}catch{}}
+ $script:ExcelCells.Clear()
+}
