@@ -1,22 +1,57 @@
-param([string]$Executable,[string]$StagedExe,[int]$PidToWait)
+param(
+ [Parameter(Mandatory=$true)][string]$Executable,
+ [Parameter(Mandatory=$true)][string]$Archive,
+ [int]$PidToWait=0,
+ [Parameter(Mandatory=$true)][string]$TargetVersion
+)
 $ErrorActionPreference='Stop'
-$log=Join-Path (Split-Path -Parent $Executable) 'excel-daily-updater.log'
-function Log($s) { Add-Content -LiteralPath $log -Value ((Get-Date).ToString('s')+' '+$s) }
+$dir=Split-Path -Parent $Executable
+$log=Join-Path $dir 'excel-daily-updater.log'
+function Log([string]$msg){Add-Content -LiteralPath $log -Value ((Get-Date).ToString('s')+' '+$msg)}
+$stage=Join-Path ([IO.Path]::GetTempPath()) ('excel-daily-extract-'+[guid]::NewGuid().ToString('N'))
 try {
- try { Wait-Process -Id $PidToWait -Timeout 45 -ErrorAction Stop } catch {
-   if (Get-Process -Id $PidToWait -ErrorAction SilentlyContinue) { throw 'Old process did not exit' }
+ if($TargetVersion -notmatch '^\d+\.\d+\.\d+$'){throw 'Invalid target version'}
+ New-Item -ItemType Directory -Path $stage -Force|Out-Null
+ Expand-Archive -LiteralPath $Archive -DestinationPath $stage -Force
+ foreach($name in @('excel-daily.exe','excel-daily-settings.exe')){
+  $src=Join-Path $stage $name
+  if(!(Test-Path -LiteralPath $src) -or (Get-Item -LiteralPath $src).Length -lt 100KB){throw "Missing or invalid $name"}
  }
- $backup=$Executable+'.bak'
- Copy-Item -LiteralPath $Executable -Destination $backup -Force
- try {
-   Copy-Item -LiteralPath $StagedExe -Destination $Executable -Force
-   $p=Start-Process -FilePath $Executable -WorkingDirectory (Split-Path -Parent $Executable) -PassThru
-   Log ('Updated and restarted PID='+$p.Id)
- } catch {
-   Copy-Item -LiteralPath $backup -Destination $Executable -Force
-   Log ('Restored backup: '+$_)
-   throw
+ if($PidToWait -gt 0){
+  try{Wait-Process -Id $PidToWait -Timeout 60 -ErrorAction Stop}catch{
+   if(Get-Process -Id $PidToWait -ErrorAction SilentlyContinue){throw 'Parent process still running'}
+  }
  }
-} catch { Log ('FAILED: '+$_); exit 1 } finally {
- Remove-Item -LiteralPath (Split-Path -Parent $StagedExe) -Recurse -Force -ErrorAction SilentlyContinue
+ # Never interrupt a running Excel write, including updates initiated in Settings.
+ $busy=Join-Path $dir 'excel-daily-busy.lock'
+ for($i=0;$i -lt 120;$i++){
+  if(!(Test-Path -LiteralPath $busy)){break}
+  Start-Sleep -Seconds 1
+ }
+ if(Test-Path -LiteralPath $busy){throw 'Excel update active; retry later'}
+ # Only stop this installation's processes, not another Excel Daily copy.
+ foreach($name in @('excel-daily-settings.exe','excel-daily.exe')){
+  $target=Join-Path $dir $name
+  $live=@(Get-CimInstance Win32_Process -Filter ("name='"+$name+"'") -ErrorAction SilentlyContinue |
+    Where-Object{$_.ExecutablePath -ieq $target})
+  foreach($p in $live){Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop}
+ }
+ Start-Sleep -Milliseconds 600
+ foreach($name in @('excel-daily.exe','excel-daily-settings.exe')){
+  $dst=Join-Path $dir $name
+  if(Test-Path -LiteralPath $dst){Copy-Item -LiteralPath $dst -Destination ($dst+'.bak') -Force}
+  Copy-Item -LiteralPath (Join-Path $stage $name) -Destination $dst -Force
+ }
+ # settings.json, Excel workbooks, excel-daily-state.json and device id are preserved.
+ $exe=Join-Path $dir 'excel-daily.exe'
+ $agent=Start-Process -FilePath $exe -WorkingDirectory $dir -PassThru
+ Start-Sleep -Seconds 2
+ if($agent.HasExited){throw "Updated agent exited with code $($agent.ExitCode)"}
+ Log ('UPDATE_SUCCESS version='+$TargetVersion+' pid='+$agent.Id)
+}catch{
+ Log ('UPDATE_FAILED '+$_.Exception.Message+'; backups left for manual recovery')
+ exit 1
+}finally{
+ Remove-Item -LiteralPath $stage -Force -Recurse -ErrorAction SilentlyContinue
+ Remove-Item -LiteralPath (Split-Path -Parent $Archive) -Force -Recurse -ErrorAction SilentlyContinue
 }
