@@ -33,7 +33,7 @@ mod tests{
  #[test] fn embedded_settings_has_exactly_one_bom(){
   let contents=settings_script_contents();
   assert!(contents.starts_with('\u{feff}'));
-  assert!(!contents[1..].starts_with('\u{feff}'));
+  assert_ne!(contents.chars().nth(1),Some('\u{feff}'));
   assert!(contents.trim_start_matches('\u{feff}').starts_with("param("));
  }
 }
