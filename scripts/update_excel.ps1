@@ -85,19 +85,7 @@ function PickSheet($book, [string]$wanted) {
     if ($found.Count -eq 1) { return $found[0] }
     throw "Không tìm thấy sheet '$wanted'. Kiểm tra tên sheet trong settings.json."
 }
-function ShiftDate([string]$shift,[int]$dateOffset=0) {
-    # Tomorrow always means the next calendar day (JST), even after midnight
-    # when the night shift still belongs to the previous production date.
-    if ($dateOffset -eq 1) {
-        return [DateTime]::Today.AddDays(1).ToString('yyyy-MM-dd')
-    }
-    $now=[DateTime]::Now
-    # Night shift from 19:00 to 07:30 belongs to the day it started.
-    if ($shift -eq 'night' -and $now.TimeOfDay -lt [TimeSpan]::FromHours(7.5)) {
-        return $now.AddDays(-1).ToString('yyyy-MM-dd')
-    }
-    return $now.ToString('yyyy-MM-dd')
-}
+. (Join-Path $PSScriptRoot 'shift_date.ps1')
 function FetchEvents($cfg, [string]$baseDir, [string]$shift,[int]$dateOffset=0) {
     $url = [string]$cfg.data_source.api_url
     if ($url) {
