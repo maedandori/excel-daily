@@ -92,6 +92,8 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 fn call_excel(dir: PathBuf, action: &'static str, busy: Arc<AtomicBool>) {
     let script = dir.join("update_excel.ps1");
     let config = dir.join("settings.json");
+    let busy_file=dir.join("excel-daily-busy.lock");
+    let _=fs::write(&busy_file,std::process::id().to_string());
     let shifts: &[&str] = if action == "refresh_times" { &["day", "night"] } else { &[action] };
     let mut failures = Vec::new();
     for shift in shifts {
@@ -116,6 +118,7 @@ fn call_excel(dir: PathBuf, action: &'static str, busy: Arc<AtomicBool>) {
     if !failures.is_empty() {
         info(&format!("Excel Daily lỗi khi cập nhật {}. Xem excel-daily.log.", failures.join(", ")));
     }
+    let _=fs::remove_file(&busy_file);
     busy.store(false, Ordering::SeqCst);
 }
 fn check_for_update(dir: &Path, exe: &Path, repo: &str) -> bool {
