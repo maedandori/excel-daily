@@ -130,10 +130,12 @@ function RepairColorIfBroken($sheet, $cfg, $event, [int]$row) {
         }
     }
 }
+# Ctrl+1, Ctrl+2 and Ctrl+3 share this rounding rule.
+. (Join-Path $PSScriptRoot 'round_time.ps1')
 function EventTime($event) {
     $t = [string]$event.time
-    if ($t -notmatch '^\d{1,2}:\d{2}$') { throw "Giờ không hợp lệ ($($event.id)): $t" }
-    return $t
+    try { return RoundEventTimeUp $t }
+    catch { throw "Giờ không hợp lệ ($($event.id)): $t" }
 }
 $cfg = Get-Content -LiteralPath $Settings -Raw -Encoding UTF8 | ConvertFrom-Json
 $baseDir = Split-Path -Parent $Settings
