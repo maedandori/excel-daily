@@ -32,11 +32,14 @@ jobs:
       - name: Validate PowerShell syntax
         shell: pwsh
         run: |
-          foreach ($file in @('scripts/update_excel.ps1','scripts/check_update.ps1','scripts/apply_update.ps1')) {
+          foreach ($file in @('scripts/update_excel.ps1','scripts/check_update.ps1','scripts/apply_update.ps1','scripts/round_time.ps1','scripts/agent_presence.ps1','scripts/settings_gui.ps1')) {
             $tokens=$null; $errors=$null
             [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file),[ref]$tokens,[ref]$errors) | Out-Null
             if ($errors.Count -gt 0) { $errors | Format-List | Out-String | Write-Error; exit 1 }
           }
+      - name: Test 10 minute rounding in Windows PowerShell
+        shell: powershell
+        run: .\\tests\\round-time.test.ps1
       - name: Build release with embedded icon
         run: cargo build --release --target x86_64-pc-windows-msvc
       - name: Package
@@ -44,12 +47,14 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           Copy-Item target/x86_64-pc-windows-msvc/release/excel-daily.exe dist/
+          Copy-Item target/x86_64-pc-windows-msvc/release/excel-daily-settings.exe dist/
           Copy-Item settings.json dist/
           Copy-Item events.example.json dist/
           Copy-Item README.md dist/
           Copy-Item scripts/*.ps1 dist/
           Compress-Archive -Path dist/* -DestinationPath excel-daily-windows.zip -Force
           (Get-FileHash -Algorithm SHA256 dist/excel-daily.exe).Hash.ToLower() | Set-Content -Path excel-daily.exe.sha256 -Encoding ascii -NoNewline
+          (Get-FileHash -Algorithm SHA256 excel-daily-windows.zip).Hash.ToLower() | Set-Content -Path excel-daily-windows.zip.sha256 -Encoding ascii -NoNewline
       - uses: actions/upload-artifact@v4
         with:
           name: excel-daily-windows
@@ -70,5 +75,5 @@ jobs:
           if ($LASTEXITCODE -eq 0) {
             Write-Output "Release $tag already exists; do not replace immutable published binary."
           } else {
-            gh release create $tag dist/excel-daily.exe excel-daily.exe.sha256 excel-daily-windows.zip --target "$env:GITHUB_SHA" --title "Excel Daily $tag" --notes "Windows x64; SHA256-verified automatic updates."
+            gh release create $tag dist/excel-daily.exe dist/excel-daily-settings.exe excel-daily.exe.sha256 excel-daily-windows.zip excel-daily-windows.zip.sha256 --target "$env:GITHUB_SHA" --title "Excel Daily $tag" --notes "Windows x64; SHA256-verified automatic updates."
           }
