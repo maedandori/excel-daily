@@ -1,7 +1,8 @@
 ﻿param(
     [Parameter(Mandatory=$true)][string]$Settings,
     [Parameter(Mandatory=$true)][ValidateSet("day","night")][string]$Shift,
-    [switch]$TimeOnly
+    [switch]$TimeOnly,
+    [ValidateRange(0,1)][int]$DateOffset=0
 )
 $ErrorActionPreference = "Stop"
 # PowerShell 5.1 otherwise writes stdout/stderr using the OEM code page,
@@ -84,7 +85,12 @@ function PickSheet($book, [string]$wanted) {
     if ($found.Count -eq 1) { return $found[0] }
     throw "Không tìm thấy sheet '$wanted'. Kiểm tra tên sheet trong settings.json."
 }
-function ShiftDate([string]$shift) {
+function ShiftDate([string]$shift,[int]$dateOffset=0) {
+    # Tomorrow always means the next calendar day (JST), even after midnight
+    # when the night shift still belongs to the previous production date.
+    if ($dateOffset -eq 1) {
+        return [DateTime]::Today.AddDays(1).ToString('yyyy-MM-dd')
+    }
     $now=[DateTime]::Now
     # Night shift from 19:00 to 07:30 belongs to the day it started.
     if ($shift -eq 'night' -and $now.TimeOfDay -lt [TimeSpan]::FromHours(7.5)) {
@@ -92,7 +98,7 @@ function ShiftDate([string]$shift) {
     }
     return $now.ToString('yyyy-MM-dd')
 }
-function FetchEvents($cfg, [string]$baseDir, [string]$shift) {
+function FetchEvents($cfg, [string]$baseDir, [string]$shift,[int]$dateOffset=0) {
     $url = [string]$cfg.data_source.api_url
     if ($url) {
         $headers = @{}
@@ -100,7 +106,7 @@ function FetchEvents($cfg, [string]$baseDir, [string]$shift) {
         # API must return {"events":[...]} with the documented fields.
         if (!$cfg.data_source.api_token) { throw 'Chưa cấu hình data_source.api_token. Cần token Excel Daily riêng trên Cloudflare.' }
         if ($url -notmatch '^https://') { throw 'API phải sử dụng HTTPS.' }
-        $date = ShiftDate $shift
+        $date = ShiftDate $shift $dateOffset
         $separator = if ($url.Contains('?')) { '&' } else { '?' }
         $requestUrl = $url + $separator + 'shift=' + [uri]::EscapeDataString($shift) + '&date=' + [uri]::EscapeDataString($date)
         try {
@@ -161,7 +167,7 @@ $cfg = Get-Content -LiteralPath $Settings -Raw -Encoding UTF8 | ConvertFrom-Json
 $script:ColorCellsEnabled=($null -eq $cfg.formatting -or $cfg.formatting.color_cells -ne $false)
 $fastWrites=($null -eq $cfg.formatting -or $cfg.formatting.fast_excel_writes -ne $false)
 $baseDir = Split-Path -Parent $Settings
-$events = @(FetchEvents $cfg $baseDir $Shift)
+$events = @(FetchEvents $cfg $baseDir $Shift $DateOffset)
 # Validate entire input before touching Excel.
 $usable = @()
 foreach ($e in $events) {
@@ -292,7 +298,7 @@ if ($cfg.update_policy.save_automatically -eq $true) {
     $book.Save()
 }
 $elapsed=[int]([DateTime]::UtcNow-$started).TotalMilliseconds
-Write-Output "Workbook=$($book.Name); sheet=$($sheet.Name); added=$added; updated_times=$changed; colored_cells=$colored; preserved=$kept; elapsed_ms=$elapsed; excel_saved=$($cfg.update_policy.save_automatically)"
+Write-Output "date_offset=$DateOffset; Workbook=$($book.Name); sheet=$($sheet.Name); added=$added; updated_times=$changed; colored_cells=$colored; preserved=$kept; elapsed_ms=$elapsed; excel_saved=$($cfg.update_policy.save_automatically)"
 } finally {
  if($eventsChanged){try{$excel.EnableEvents=$oldEvents}catch{}}
  if($screenChanged){try{$excel.ScreenUpdating=$oldScreen}catch{}}
