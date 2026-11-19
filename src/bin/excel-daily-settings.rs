@@ -23,9 +23,25 @@ fn log_event(dir:&Path,message:&str){
   }
  }
 }
+fn settings_script_contents()->String {
+ let source=include_str!("../../scripts/settings_gui.ps1");
+ format!("\u{feff}{}",source.trim_start_matches('\u{feff}'))
+}
+#[cfg(test)]
+mod tests{
+ use super::*;
+ #[test] fn embedded_settings_has_exactly_one_bom(){
+  let contents=settings_script_contents();
+  assert!(contents.starts_with('\u{feff}'));
+  assert!(!contents[1..].starts_with('\u{feff}'));
+  assert!(contents.trim_start_matches('\u{feff}').starts_with("param("));
+ }
+}
 fn run(dir:&Path) -> Result<(),String> {
  let script=dir.join("excel-daily-settings.ps1");
- fs::write(&script,concat!("\u{feff}",include_str!("../../scripts/settings_gui.ps1")))
+ // The source may already start with a BOM. Exactly one BOM must be written:
+ // a duplicated BOM can make Windows PowerShell 5.1 reject the param() declaration.
+ fs::write(&script,settings_script_contents())
   .map_err(|e|format!("Cannot create Settings script: {e}"))?;
  fs::write(dir.join("settings_update_state.ps1"),include_str!("../../scripts/settings_update_state.ps1"))
   .map_err(|e|format!("Cannot create update-state script: {e}"))?;
