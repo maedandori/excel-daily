@@ -3,6 +3,25 @@ $ErrorActionPreference='Stop'
 $dir=if($ConfigPath){Split-Path -Parent ([IO.Path]::GetFullPath($ConfigPath))}else{$PSScriptRoot}
 $file=if($ConfigPath){[IO.Path]::GetFullPath($ConfigPath)}else{Join-Path $dir 'settings.json'}
 $log=Join-Path $dir 'excel-daily-settings.log'
+. (Join-Path $PSScriptRoot 'settings_update_state.ps1')
+$script:UpdateRequestActive=$false
+$script:UpdateStatusPath=''
+$script:ShutdownReason='normal-window-close'
+function WriteSettingsLog([string]$event,[string]$detail=''){
+ $stamp=Get-Date -Format o
+ $entry="$stamp pid=$PID $event $detail"
+ $paths=@($log)
+ if($env:LOCALAPPDATA){$paths+=Join-Path $env:LOCALAPPDATA 'ExcelDaily\settings.log'}
+ if($env:TEMP){$paths+=Join-Path $env:TEMP 'excel-daily-settings.log'}
+ foreach($target in $paths){
+  try{
+   $parent=Split-Path -Parent $target
+   if(!(Test-Path -LiteralPath $parent)){New-Item -ItemType Directory -Path $parent -Force|Out-Null}
+   Add-Content -LiteralPath $target -Value $entry -Encoding UTF8
+  }catch{}
+ }
+}
+WriteSettingsLog 'SCRIPT_START'
 try {
  Add-Type -AssemblyName System.Windows.Forms
  Add-Type -AssemblyName System.Drawing
@@ -134,7 +153,7 @@ try {
  ButtonAt 'Stop Agent' 352 542 150 {
   StopOwnAgent;$script:Status.Text='Agent stopped.'
  }
- ButtonAt 'Close' 518 542 160 {$form.Close()}
+ ButtonAt 'Close' 518 542 160 {$script:ShutdownReason='close-button';$form.Close()}
  ButtonAt 'Ghi lịch ngày mai / 翌日' 20 594 310 {
   try{
    if([System.Windows.Forms.MessageBox]::Show(
@@ -158,24 +177,40 @@ try {
   try{
    SaveSettings
    $helper=Join-Path $dir 'check_update.ps1'
-   $statusPath=Join-Path $dir 'excel-daily-update-status.txt'
-   if(Test-Path $statusPath){Remove-Item $statusPath -Force}
+   # Unique per request: a stale UPDATE_READY from yesterday cannot close this window.
+   $statusPath=Join-Path $dir ("excel-daily-update-"+[guid]::NewGuid().ToString('N')+".txt")
+   $script:UpdateStatusPath=$statusPath
+   $script:UpdateRequestActive=$true
    $args=@('-NoProfile','-NonInteractive','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',('"' + $helper + '"'),
     '-Executable',('"' + (Join-Path $dir 'excel-daily.exe') + '"'),
     '-CurrentVersion',$version,'-Repo','maedandori/excel-daily',
     '-PidToWait',[string]$PID,'-StatusFile',('"' + $statusPath + '"'))
    Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList $args|Out-Null
    $script:Status.Text='Checking GitHub Release...'
-  }catch{[System.Windows.Forms.MessageBox]::Show($_.Exception.Message,'Excel Daily Settings')|Out-Null}
+   WriteSettingsLog 'UPDATE_REQUESTED' $script:UpdateStatusPath
+  }catch{
+   $script:UpdateRequestActive=$false
+   WriteSettingsLog 'UPDATE_START_FAILED' $_.Exception.Message
+   [System.Windows.Forms.MessageBox]::Show($_.Exception.Message,'Excel Daily Settings')|Out-Null
+ }
  }
  $timer=[System.Windows.Forms.Timer]::new();$timer.Interval=1000
  $timer.Add_Tick({
-  $p=Join-Path $dir 'excel-daily-update-status.txt'
-  if(Test-Path $p){
-   try{$message=([IO.File]::ReadAllText($p)).Trim()
+  if(-not $script:UpdateRequestActive){return}
+  $p=$script:UpdateStatusPath
+  if($p -and (Test-Path -LiteralPath $p)){
+   try{
+    $message=([IO.File]::ReadAllText($p)).Trim()
     if($message){$script:Status.Text=$message}
-    if($message -eq 'UPDATE_READY'){$timer.Stop();$form.Close()}
-   }catch{}
+    if(ShouldCloseSettingsForUpdate $script:UpdateRequestActive $message){
+     $script:ShutdownReason='fresh-GitHub-update'
+     WriteSettingsLog 'UPDATE_READY_CLOSE'
+     $timer.Stop();$form.Close()
+    }elseif($message -eq 'UP_TO_DATE' -or $message -like 'UPDATE_FAILED*'){
+     $script:UpdateRequestActive=$false
+     WriteSettingsLog 'UPDATE_FINISHED' $message
+    }
+   }catch{WriteSettingsLog 'STATUS_CHECK_ERROR' $_.Exception.Message}
   }
  })
  if($SelfTest){
@@ -185,10 +220,19 @@ try {
   return
  }
  $timer.Start()
- $form.Add_Shown({$form.Activate();$form.BringToFront()})
+ $form.Add_Shown({
+  WriteSettingsLog 'WINDOW_SHOWN'
+  $form.Activate();$form.BringToFront()
+ })
+ $form.Add_FormClosing({
+  WriteSettingsLog 'WINDOW_CLOSING' $script:ShutdownReason
+ })
+ WriteSettingsLog 'OPENING_DIALOG'
  [void]$form.ShowDialog()
+ WriteSettingsLog 'DIALOG_RETURNED' $script:ShutdownReason
 }catch{
  $details="Startup error: "+$_.Exception.Message+" (line "+$_.InvocationInfo.ScriptLineNumber+")"
+ WriteSettingsLog 'SCRIPT_EXCEPTION' $details
  try{Add-Content -LiteralPath $log -Value ("$(Get-Date -Format o) "+$details) -Encoding UTF8}catch{}
  try{[System.Windows.Forms.MessageBox]::Show($details+' See excel-daily-settings.log.','Excel Daily Settings Error')|Out-Null}catch{}
  Write-Error $details

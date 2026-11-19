@@ -211,3 +211,19 @@ Optional `settings.json` flags `formatting.fast_excel_writes` and
   are preserved by the updater. An existing `settings.json` with only day and
   night shortcuts receives default refresh/tomorrow shortcuts in memory; saving
   Settings persists the new keys.
+
+## v0.3.3: Settings closing unexpectedly
+
+The previous Settings timer could read a left-over
+`excel-daily-update-status.txt` containing `UPDATE_READY` and immediately close
+the GUI without an error or diagnostic log. Settings now uses a **unique status
+file for each actual button-initiated update** and ignores old update results.
+Normal startup does not automatically terminate Settings. The update monitor
+closes the GUI only after a fresh and verified update request is staged.
+
+Settings now records `EXE_START`, PowerShell start/exit and Windows Forms
+show/close events, including normal exits, in both the installation folder
+(`excel-daily-settings.log`) and the per-user fallback
+`%LOCALAPPDATA%\\ExcelDaily\\settings.log`. No API tokens are logged.
+When errors occur, Settings still shows the error dialog. The new CI test
+also checks that stale `UPDATE_READY` is ignored.
