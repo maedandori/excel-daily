@@ -15,7 +15,9 @@
   },
   "hotkeys": {
     "day": "Ctrl+1",
-    "night": "Ctrl+2"
+    "night": "Ctrl+2",
+    "refresh": "Ctrl+3",
+    "tomorrow": "Ctrl+4"
   },
   "rows": {
     "day_start": 9,

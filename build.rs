@@ -20,6 +20,9 @@ fn main() {
     dir.write(&mut f).unwrap();
     let mut res = winres::WindowsResource::new();
     res.set_icon(path.to_str().unwrap());
+    let version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_|"0.0.0".to_owned());
+    res.set("FileVersion", &version);
+    res.set("ProductVersion", &version);
     res.set("ProductName", "Excel Daily");
     res.set("FileDescription", "MICS Excel Daily Hotkey Agent");
     res.compile().unwrap();

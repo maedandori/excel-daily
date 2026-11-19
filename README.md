@@ -187,3 +187,27 @@ Ctrl+3 remains time-only and does not change color cells. A broken label
 repaired by the existing UTF-8 fix receives matching formatting.
 Optional `settings.json` flags `formatting.fast_excel_writes` and
 `formatting.color_cells` default to true when absent.
+
+## v0.3.2 — Settings startup fix, displayed versions, editable hotkeys and tomorrow schedules
+
+- The Settings EXE now reports PowerShell startup errors in a visible dialog and
+  saves details to `excel-daily-settings.log`; it does not silently exit.
+  A Windows CI self-test constructs all Settings controls before a Release is published.
+- Settings header displays the compiled **Settings version** and the last
+  Agent version recorded in `excel-daily-version.json`, with a running indicator.
+- Choose four unique global hotkeys in Settings using `Ctrl+0..9` or
+  `Ctrl+Shift+0..9`. Defaults are: Ctrl+1 for day, Ctrl+2 for night,
+  Ctrl+3 for pending times only, and Ctrl+4 for tomorrow's full schedule.
+  Save and restart Agent for hotkey registration to change.
+- The tomorrow action imports the **next calendar day's** mold and color change
+  events for *both* day and night sheets, including when invoked after midnight.
+  To avoid mixing days, open the intended tomorrow workbook first. The Agent
+  asks for confirmation. It only fills free Excel rows, preserving all existing
+  entries. It does not automatically clear or create workbooks.
+- Settings includes an **Apply tomorrow** button. This sends a local command
+  to the Agent under the same busy lock as hotkeys, so no concurrent Excel
+  operations are started. If the Agent is not running, start it first.
+- Files `settings.json`, `excel-daily-state.json`, and existing workbooks
+  are preserved by the updater. An existing `settings.json` with only day and
+  night shortcuts receives default refresh/tomorrow shortcuts in memory; saving
+  Settings persists the new keys.
