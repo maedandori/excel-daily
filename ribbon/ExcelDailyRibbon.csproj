@@ -11,6 +11,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System.Windows.Forms" />
+    <Reference Include="Microsoft.CSharp" />
     <PackageReference Include="ExcelDna.AddIn" Version="1.9.0" />
   </ItemGroup>
 </Project>
