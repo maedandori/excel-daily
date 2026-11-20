@@ -42,6 +42,18 @@ try {
   if(Test-Path -LiteralPath $dst){Copy-Item -LiteralPath $dst -Destination ($dst+'.bak') -Force}
   Copy-Item -LiteralPath (Join-Path $stage $name) -Destination $dst -Force
  }
+ # Excel may hold the XLL open. Never fail an Agent update or interrupt Excel
+ # because its Ribbon Add-in cannot be replaced until Excel is closed.
+ foreach($name in @('ExcelDailyRibbon.xll','ExcelDailyRibbon64.xll','install-ribbon.ps1')){
+  $src=Join-Path $stage $name
+  if(!(Test-Path -LiteralPath $src)){continue}
+  $dst=Join-Path $dir $name
+  try{
+   Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
+  }catch{
+   Log ('RIBBON_COPY_DEFERRED '+$name+'; close Excel and reinstall from the ZIP if required: '+$_.Exception.Message)
+  }
+ }
  # settings.json, Excel workbooks, excel-daily-state.json and device id are preserved.
  $exe=Join-Path $dir 'excel-daily.exe'
  $agent=Start-Process -FilePath $exe -WorkingDirectory $dir -PassThru
