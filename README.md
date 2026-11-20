@@ -227,3 +227,59 @@ show/close events, including normal exits, in both the installation folder
 `%LOCALAPPDATA%\\ExcelDaily\\settings.log`. No API tokens are logged.
 When errors occur, Settings still shows the error dialog. The new CI test
 also checks that stale `UPDATE_READY` is ignored.
+
+## v0.3.4 — Excel 2019 Ribbon, Turso-backed refresh, no VBA
+
+The bundled Excel-DNA add-in provides a new **EXCEL-DAILY** Ribbon tab in
+Microsoft Excel 2019 (32-bit and 64-bit). No VBA, macro-enabled workbook,
+MICS database connection, LAN access, or Turso authentication token is needed
+on the Excel PC. The normal `.xlsx` workbook stays open.
+
+- **データ更新**: add missing mold/color transitions to **both** shift sheets,
+  update the times of recognized existing events, and preserve other cells.
+- **時間更新**: update only times for previously tracked, uncompleted events.
+- **翌日予定**: schedule tomorrow's day/night sheets (confirm the workbook first).
+
+The existing agent continues to fetch data from:
+`https://machine-control.maedandoris.workers.dev/api/excel-daily/events`
+using the per-device `data_source.api_token` (Worker secret `EXCEL_DAILY_TOKEN`).
+The Worker reads the **currently selected MICS backend**, including Turso.
+Never put `TURSO_AUTH_TOKEN` in Excel or commit `api_token`.
+
+**One-time installation:** extract `excel-daily-windows.zip` to a writable
+folder. Close Excel, open PowerShell in that folder and run:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-ribbon.ps1
+```
+
+The installer registers either `ExcelDailyRibbon.xll` (32-bit) or
+`ExcelDailyRibbon64.xll` (64-bit) for **only the current user** in Excel
+16.0. If bitness auto-detection fails, supply `-Bitness x86` or
+`-Bitness x64`. Restart Excel; enable the trusted Add-in in Excel's security
+dialog if required by the organization's policies. To remove the Ribbon, close
+Excel and run `install-ribbon.ps1 -Remove`. Its `.xll` and Agent must
+remain in the same folder. The Ribbon sends a small local command to the Agent;
+the Agent and PowerShell Excel COM code remain responsible for all writes and
+for the existing busy lock. An accepted command is **not** a success signal:
+check `excel-daily.log` for the API/Excel result. A stale or incompatible
+Excel Add-in can require closing Excel before a binary update is applied.
+
+**30-minute pre-shift rule:** for day shift the next-sheet event feed also
+considers mold/color changes scheduled 07:00–07:29; for night shift
+18:30–18:59. Future planned changes are included. A past change is included
+only if its exact MICS order is still in an active change status. The
+read-only Worker endpoint must include the corresponding
+`machine-control` update. Without that deployment, the old API cannot
+supply the newly requested pre-shift events.
+
+**Safe row matching:** stored stable event IDs always take precedence. If a
+mapping file has been lost, the refresh can reuse an unambiguous existing
+machine/time/color row and update only its time, not re-add it; ambiguous
+manual rows remain untouched and are reported in the log. Full refresh never
+deletes prior rows. Completed events and manual edits remain protected.
+The original Ctrl+1/Ctrl+2/Ctrl+3/Ctrl+4 hotkeys remain available.
+
+**Verification:** GitHub Windows CI checks that both packed 32/64-bit XLLs
+exist. Manual validation on a real installed Excel 2019 instance and a live
+authorized Worker is still necessary before production rollout.
