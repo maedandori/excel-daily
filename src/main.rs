@@ -162,6 +162,39 @@ fn check_for_update(dir: &Path, exe: &Path, repo: &str) -> bool {
     }
     false
 }
+// Ribbon is installed per-user, without administrative permissions or VBA.
+// Do not treat Office Add-in policy failures as fatal for the original hotkeys.
+fn ensure_ribbon_registered(dir: &Path) {
+    let script = dir.join("install-ribbon.ps1");
+    if !script.is_file() {
+        log(dir, "RIBBON_INSTALL_MISSING_SCRIPT: use complete excel-daily-windows.zip.");
+        return;
+    }
+    if !dir.join("ExcelDailyRibbon.xll").exists() || !dir.join("ExcelDailyRibbon64.xll").exists() {
+        log(dir, "RIBBON_INSTALL_MISSING_XLL: install complete ZIP, not the standalone EXE.");
+        return;
+    }
+    let result = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(&script)
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .output();
+    match result {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if output.status.success() {
+                log(dir, &format!("RIBBON_REGISTER_OK: {}", stdout.trim()));
+            } else {
+                log(dir, &format!("RIBBON_REGISTER_FAILED: code={} stdout={} stderr={}",
+                    output.status, stdout.trim(), stderr.trim()));
+            }
+        }
+        Err(e) => log(dir, &format!("RIBBON_INSTALL_LAUNCH_FAILED: {e}")),
+    }
+}
+
 fn agent_presence(dir: &Path,command_id: Option<u64>,status: Option<&str>)->Option<serde_json::Value>{
     let mut p=Command::new("powershell.exe");
     p.args(["-NoProfile","-WindowStyle","Hidden","-ExecutionPolicy","Bypass","-File"])
@@ -194,6 +227,8 @@ fn main() -> anyhow::Result<()> {
     fs::write(dir.join("agent_presence.ps1"), include_str!("../scripts/agent_presence.ps1"))?;
     fs::write(dir.join("check_update.ps1"), include_str!("../scripts/check_update.ps1"))?;
     fs::write(dir.join("apply_update.ps1"), include_str!("../scripts/apply_update.ps1"))?;
+    fs::write(dir.join("install-ribbon.ps1"), include_str!("../scripts/install-ribbon.ps1"))?;
+    ensure_ribbon_registered(&dir);
     let version_path=dir.join("excel-daily-version.json");
     let version_info=serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id()});
     let _=fs::write(&version_path,serde_json::to_string_pretty(&version_info)?);
