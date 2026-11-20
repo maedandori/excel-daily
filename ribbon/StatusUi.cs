@@ -87,7 +87,7 @@ namespace ExcelDailyRibbon
         public static bool Guard()
         {
             if (!IsBusy) return true;
-            Show("Excel Daily: 更新中 — các nút tạm khóa; không gửi yêu cầu trùng.");
+            Show("Excel Daily: 更新中です。完了するまで操作できません。");
             return false;
         }
 
@@ -95,13 +95,13 @@ namespace ExcelDailyRibbon
         {
             _submittedUtc = DateTime.UtcNow;
             _invalidatePending = true;
-            Show("Excel Daily: 更新中 — đang cập nhật " + fileName);
+            Show("Excel Daily: 更新中 — 対象ファイル: " + fileName);
             Poll();
         }
 
         public static void ShowError(Exception ex)
         {
-            Show("Excel Daily: エラー — " + ex.Message);
+            Show("Excel Daily: エラー — " + ((ex is InvalidOperationException || ex is FileNotFoundException) ? ex.Message : "処理に失敗しました。詳細はログを確認してください。"));
             try
             {
                 EnsureDirectory();
@@ -183,7 +183,7 @@ namespace ExcelDailyRibbon
                 }
                 catch { return; }
                 if (changed < _loadedUtc.AddSeconds(-1)) return;
-                if (status.state != "success" && status.state != "error") return;
+                if (status.state != "success" && status.state != "error" && status.state != "deferred") return;
                 string completedKey = status.updated_ms + ":" + status.state + ":" + status.message;
                 if (_lastCompletion != completedKey)
                 {
