@@ -1,4 +1,4 @@
-# Preserves manual entries and finds the Japanese drying table by its headers.
+﻿# Preserves manual entries and finds the Japanese drying table by its headers.
 # Excel cell helpers, MachineId, EventTime and ExcelTimeText are defined by update_excel.ps1.
 function DryingTimeFromConfig($cfg,[object[]]$materials) {
  $rules=$null
