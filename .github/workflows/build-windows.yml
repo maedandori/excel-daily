@@ -36,7 +36,7 @@ jobs:
       - name: Validate PowerShell syntax
         shell: pwsh
         run: |
-          foreach ($file in @('scripts/update_excel.ps1','scripts/check_update.ps1','scripts/apply_update.ps1','scripts/round_time.ps1','scripts/agent_presence.ps1','scripts/settings_gui.ps1','scripts/color_cells.ps1','scripts/shift_date.ps1','scripts/settings_update_state.ps1','scripts/install-ribbon.ps1')) {
+          foreach ($file in @('scripts/update_excel.ps1','scripts/check_update.ps1','scripts/apply_update.ps1','scripts/round_time.ps1','scripts/agent_presence.ps1','scripts/settings_gui.ps1','scripts/color_cells.ps1','scripts/shift_date.ps1','scripts/settings_update_state.ps1','scripts/install-ribbon.ps1','scripts/update_safety.ps1')) {
             $tokens=$null; $errors=$null
             [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file),[ref]$tokens,[ref]$errors) | Out-Null
             if ($errors.Count -gt 0) { $errors | Format-List | Out-String | Write-Error; exit 1 }
@@ -45,13 +45,18 @@ jobs:
         shell: powershell
         run: |
           $result = powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/install-ribbon.ps1 -Diagnose
-          if ($LASTEXITCODE -ne 0 -or (($result -join "`n") -notmatch 'Ribbon diagnostics')) { throw 'Ribbon diagnostic command failed' }
+          if ($LASTEXITCODE -ne 0 -or (($result -join "`n") -notmatch 'RIBBON_DIAGNOSTICS_OK')) { throw 'Ribbon diagnostic command failed' }
       - name: Test no modal messages and busy/StatusBar lifecycle
         shell: powershell
         run: .\tests\status-feedback.test.ps1
       - name: Test exact clicked workbook targeting
         shell: powershell
         run: .\tests\target-workbook.test.ps1
+      - name: Test Japanese user-facing messages and automatic update deferral
+        shell: powershell
+        run: |
+          .\tests\japanese-messages.test.ps1
+          .\tests\update-safety.test.ps1
       - name: Test 10 minute rounding in Windows PowerShell
         shell: powershell
         run: .\\tests\\round-time.test.ps1

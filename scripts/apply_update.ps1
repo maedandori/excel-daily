@@ -1,4 +1,4 @@
-param(
+﻿param(
  [Parameter(Mandatory=$true)][string]$Executable,
  [Parameter(Mandatory=$true)][string]$Archive,
  [int]$PidToWait=0,
@@ -7,63 +7,113 @@ param(
 $ErrorActionPreference='Stop'
 $dir=Split-Path -Parent $Executable
 $log=Join-Path $dir 'excel-daily-updater.log'
+. (Join-Path $PSScriptRoot 'update_safety.ps1')
 function Log([string]$msg){Add-Content -LiteralPath $log -Value ((Get-Date).ToString('s')+' '+$msg)}
+function UpdateStatus([string]$state,[string]$message){
+ try{
+  $json=@{state=$state;message=$message;updated_ms=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()}|ConvertTo-Json -Compress
+  [IO.File]::WriteAllText((Join-Path $dir 'excel-daily-status.json'),$json,([Text.UTF8Encoding]::new($false)))
+ }catch{Log ('STATUS_WRITE_FAILED '+$_.Exception.Message)}
+}
+function RestartAgent {
+ $agent=Start-Process -FilePath $Executable -WorkingDirectory $dir -PassThru -ErrorAction Stop
+ Start-Sleep -Seconds 2
+ if($agent.HasExited){throw "Excel Dailyの再起動に失敗しました (終了コード: $($agent.ExitCode))"}
+ return $agent.Id
+}
 $stage=Join-Path ([IO.Path]::GetTempPath()) ('excel-daily-extract-'+[guid]::NewGuid().ToString('N'))
+$backup=Join-Path ([IO.Path]::GetTempPath()) ('excel-daily-backup-'+[guid]::NewGuid().ToString('N'))
+$stopped=$false
+$copyStarted=$false
+$copied=@()
 try {
- if($TargetVersion -notmatch '^\d+\.\d+\.\d+$'){throw 'Invalid target version'}
+ if($TargetVersion -notmatch '^\d+\.\d+\.\d+$'){throw '更新バージョンが正しくありません。'}
  New-Item -ItemType Directory -Path $stage -Force|Out-Null
  Expand-Archive -LiteralPath $Archive -DestinationPath $stage -Force
- foreach($name in @('excel-daily.exe','excel-daily-settings.exe')){
+ # Validate every binary BEFORE stopping the running Agent.
+ $required=@('excel-daily.exe','excel-daily-settings.exe','ExcelDailyRibbon.xll','ExcelDailyRibbon64.xll','install-ribbon.ps1')
+ foreach($name in $required){
   $src=Join-Path $stage $name
-  if(!(Test-Path -LiteralPath $src) -or (Get-Item -LiteralPath $src).Length -lt 100KB){throw "Missing or invalid $name"}
+  $minimum=if($name -like '*.exe' -or $name -like '*.xll'){100KB}else{100}
+  if(!(Test-Path -LiteralPath $src) -or (Get-Item -LiteralPath $src).Length -lt $minimum){
+   throw "更新ファイルが不足しています: $name"
+  }
  }
  if($PidToWait -gt 0){
   try{Wait-Process -Id $PidToWait -Timeout 60 -ErrorAction Stop}catch{
-   if(Get-Process -Id $PidToWait -ErrorAction SilentlyContinue){throw 'Parent process still running'}
+   if(Get-Process -Id $PidToWait -ErrorAction SilentlyContinue){throw '更新元の終了を確認できません。'}
   }
  }
- # Never interrupt a running Excel write, including updates initiated in Settings.
- $busy=Join-Path $dir 'excel-daily-busy.lock'
- for($i=0;$i -lt 120;$i++){
-  if(!(Test-Path -LiteralPath $busy)){break}
-  Start-Sleep -Seconds 1
+ # User safety: an XLL cannot be atomically replaced while Excel uses it.
+ # Defer the WHOLE release rather than installing EXE/XLL from different versions.
+ $reason=Get-ExcelDailyUpdateBlocker -Root $dir
+ if($reason){
+  Log ('UPDATE_DEFERRED reason='+$reason)
+  UpdateStatus 'deferred' '更新を保留しました。Excelを閉じてから再試行します。'
+  $id=RestartAgent
+  Log ('OLD_AGENT_RESTARTED pid='+$id)
+  exit 0
  }
- if(Test-Path -LiteralPath $busy){throw 'Excel update active; retry later'}
- # Only stop this installation's processes, not another Excel Daily copy.
+ # Stop only this installation's binaries. Never close Excel or another Agent.
  foreach($name in @('excel-daily-settings.exe','excel-daily.exe')){
   $target=Join-Path $dir $name
   $live=@(Get-CimInstance Win32_Process -Filter ("name='"+$name+"'") -ErrorAction SilentlyContinue |
     Where-Object{$_.ExecutablePath -ieq $target})
   foreach($p in $live){Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop}
  }
- Start-Sleep -Milliseconds 600
- foreach($name in @('excel-daily.exe','excel-daily-settings.exe')){
-  $dst=Join-Path $dir $name
-  if(Test-Path -LiteralPath $dst){Copy-Item -LiteralPath $dst -Destination ($dst+'.bak') -Force}
-  Copy-Item -LiteralPath (Join-Path $stage $name) -Destination $dst -Force
+ $stopped=$true
+ Start-Sleep -Milliseconds 500
+ # Check again to avoid installing when Excel reopened in the meantime.
+ $reason=Get-ExcelDailyUpdateBlocker -Root $dir
+ if($reason){
+  Log ('UPDATE_DEFERRED_AFTER_STOP reason='+$reason)
+  UpdateStatus 'deferred' '更新を保留しました。Excelを終了してから再試行します。'
+  $id=RestartAgent
+  $stopped=$false
+  Log ('OLD_AGENT_RESTARTED pid='+$id)
+  exit 0
  }
- # Excel may hold the XLL open. Never fail an Agent update or interrupt Excel
- # because its Ribbon Add-in cannot be replaced until Excel is closed.
- foreach($name in @('ExcelDailyRibbon.xll','ExcelDailyRibbon64.xll','install-ribbon.ps1')){
-  $src=Join-Path $stage $name
-  if(!(Test-Path -LiteralPath $src)){continue}
+ New-Item -ItemType Directory -Path $backup -Force | Out-Null
+ $copyStarted=$true
+ # Replace XLL first. If it is locked, stop here and restore the OLD EXE.
+ foreach($name in $required){
   $dst=Join-Path $dir $name
-  try{
-   Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
-  }catch{
-   Log ('RIBBON_COPY_DEFERRED '+$name+'; close Excel and reinstall from the ZIP if required: '+$_.Exception.Message)
+  $hadOld=Test-Path -LiteralPath $dst
+  if($hadOld){Copy-Item -LiteralPath $dst -Destination (Join-Path $backup $name) -Force -ErrorAction Stop}
+  $copied+=@{path=$dst;name=$name;hadOld=$hadOld}
+  Copy-Item -LiteralPath (Join-Path $stage $name) -Destination $dst -Force -ErrorAction Stop
+ }
+ $id=RestartAgent
+ $stopped=$false
+ Log ('UPDATE_SUCCESS version='+$TargetVersion+' pid='+$id)
+ UpdateStatus 'success' ('更新が完了しました。バージョン '+$TargetVersion+'。Excelを再起動してください。')
+}catch{
+ Log ('UPDATE_FAILED '+$_.Exception.Message)
+ if($copyStarted){
+  foreach($item in @($copied)){
+   try{
+    $prior=Join-Path $backup $item.name
+    if($item.hadOld -and (Test-Path -LiteralPath $prior)){
+     Copy-Item -LiteralPath $prior -Destination $item.path -Force -ErrorAction Stop
+    } elseif(-not $item.hadOld -and (Test-Path -LiteralPath $item.path)){
+     Remove-Item -LiteralPath $item.path -Force -ErrorAction Stop
+    }
+   }catch{Log ('ROLLBACK_FAILED '+$item.name+': '+$_.Exception.Message)}
   }
  }
- # settings.json, Excel workbooks, excel-daily-state.json and device id are preserved.
- $exe=Join-Path $dir 'excel-daily.exe'
- $agent=Start-Process -FilePath $exe -WorkingDirectory $dir -PassThru
- Start-Sleep -Seconds 2
- if($agent.HasExited){throw "Updated agent exited with code $($agent.ExitCode)"}
- Log ('UPDATE_SUCCESS version='+$TargetVersion+' pid='+$agent.Id)
-}catch{
- Log ('UPDATE_FAILED '+$_.Exception.Message+'; backups left for manual recovery')
+ if($stopped){
+  try{$id=RestartAgent;Log ('ROLLBACK_AGENT_RESTARTED pid='+$id)}
+  catch{Log ('AGENT_RESTART_FAILED '+$_.Exception.Message)}
+ }
+ UpdateStatus 'error' '自動更新に失敗しました。詳細はexcel-daily-updater.logを確認してください。'
  exit 1
 }finally{
  Remove-Item -LiteralPath $stage -Force -Recurse -ErrorAction SilentlyContinue
- Remove-Item -LiteralPath (Split-Path -Parent $Archive) -Force -Recurse -ErrorAction SilentlyContinue
+ Remove-Item -LiteralPath $backup -Force -Recurse -ErrorAction SilentlyContinue
+ if($Archive -and (Test-Path -LiteralPath $Archive)){
+  $parent=Split-Path -Parent $Archive
+  if((Split-Path -Leaf $parent) -like 'excel-daily-upgrade-*'){
+   Remove-Item -LiteralPath $parent -Force -Recurse -ErrorAction SilentlyContinue
+  }
+ }
 }

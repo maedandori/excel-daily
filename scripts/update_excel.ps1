@@ -45,7 +45,7 @@ function NormalizeName([string]$name) { return $name.Trim().Replace([char]0x3000
 function PickWorkbook($excel, $config, [string]$requestedFullName='') {
     if (-not [string]::IsNullOrWhiteSpace($requestedFullName)) {
         if (-not [IO.Path]::IsPathRooted($requestedFullName)) {
-            throw 'Ribbon request requires an absolute saved workbook path.'
+            throw '更新対象のファイルは保存済みの絶対パスで指定してください。'
         }
         # This overrides the filename pattern ONLY for a Shape/Ribbon action.
         # Never pick a different workbook if the clicked one is not open.
@@ -57,7 +57,7 @@ function PickWorkbook($excel, $config, [string]$requestedFullName='') {
             }
         }
         if($found.Count -ne 1) {
-            throw "Workbook được bấm không mở trong Excel instance này: $requestedFullName"
+            throw "指定したファイルがExcelで開かれていません: $requestedFullName"
         }
         return $found[0]
     }
@@ -67,17 +67,17 @@ function PickWorkbook($excel, $config, [string]$requestedFullName='') {
     foreach ($book in $excel.Workbooks) {
         if ($book.Name -like $pat) { $matches += $book }
     }
-    if ($matches.Count -eq 0) { throw "Không có workbook đang mở khớp $pat. Chỉ cập nhật Excel đang mở." }
+    if ($matches.Count -eq 0) { throw "一致するExcelファイルが開かれていません: $pat。開いているファイルのみ更新できます。" }
     $selected = [string]$config.workbook.selected_workbook
     if ($selected) {
         $found = @($matches | Where-Object { $_.Name -eq $selected })
         if ($found.Count -eq 1) { return $found[0] }
-        throw "Workbook đã chọn '$selected' chưa mở. Không ghi sang workbook khác."
+        throw "選択したファイル「$selected」が開かれていません。他のファイルは変更しません。"
     }
     if ($matches.Count -eq 1) { return $matches[0] }
     # No modal workbook picker. An ambiguous legacy hotkey must stop safely;
     # a clicked Shape or Ribbon button always passes its exact workbook path.
-    throw "Có nhiều workbook đang mở. Bấm nút trong workbook cần cập nhật hoặc đặt selected_workbook trong Settings."
+    throw "対象ファイルを特定できません。対象のシート上のボタンから更新するか、設定でファイルを指定してください。"
 }
 function PickSheet($book, [string]$wanted) {
     foreach ($sheet in $book.Worksheets) {
@@ -90,7 +90,7 @@ function PickSheet($book, [string]$wanted) {
         if ((NormalizeName $sheet.Name) -eq $normalized) { $found += $sheet }
     }
     if ($found.Count -eq 1) { return $found[0] }
-    throw "Không tìm thấy sheet '$wanted'. Kiểm tra tên sheet trong settings.json."
+    throw "シート「$wanted」が見つかりません。settings.jsonのシート名を確認してください。"
 }
 . (Join-Path $PSScriptRoot 'shift_date.ps1')
 function FetchEvents($cfg, [string]$baseDir, [string]$shift,[int]$dateOffset=0) {
@@ -99,34 +99,34 @@ function FetchEvents($cfg, [string]$baseDir, [string]$shift,[int]$dateOffset=0) 
         $headers = @{}
         if ($cfg.data_source.api_token) { $headers.Authorization = "Bearer $($cfg.data_source.api_token)" }
         # API must return {"events":[...]} with the documented fields.
-        if (!$cfg.data_source.api_token) { throw 'Chưa cấu hình data_source.api_token. Cần token Excel Daily riêng trên Cloudflare.' }
-        if ($url -notmatch '^https://') { throw 'API phải sử dụng HTTPS.' }
+        if (!$cfg.data_source.api_token) { throw '認証トークンが設定されていません。Excel Daily用トークンを設定してください。' }
+        if ($url -notmatch '^https://') { throw 'APIの接続先にはHTTPSを使用してください。' }
         $date = ShiftDate $shift $dateOffset
         $separator = if ($url.Contains('?')) { '&' } else { '?' }
         $requestUrl = $url + $separator + 'shift=' + [uri]::EscapeDataString($shift) + '&date=' + [uri]::EscapeDataString($date)
         try {
                         # Decode original HTTP bytes, not Windows PowerShell 5.1's legacy text charset.
             $httpResponse = Invoke-WebRequest -UseBasicParsing -Uri $requestUrl -Headers $headers -Method Get -TimeoutSec 15
-            if (-not $httpResponse.RawContentStream) { throw 'API returned no response bytes.' }
+            if (-not $httpResponse.RawContentStream) { throw 'APIからデータを取得できませんでした。' }
             $utf8 = New-Object System.Text.UTF8Encoding($false, $true)
             $payload = $utf8.GetString($httpResponse.RawContentStream.ToArray())
             $response = $payload | ConvertFrom-Json
         } catch {
             $statusCode = 0
             try { $statusCode = [int]$_.Exception.Response.StatusCode } catch {}
-            if ($statusCode -eq 401) { throw 'API 401 Unauthorized: Excel Daily token không khớp EXCEL_DAILY_TOKEN của Worker.' }
-            if ($statusCode -eq 503) { throw 'API 503: Worker chưa cấu hình EXCEL_DAILY_TOKEN hoặc nguồn MICS chưa sẵn sàng.' }
+            if ($statusCode -eq 401) { throw 'API認証に失敗しました（401）。トークンを確認してください。' }
+            if ($statusCode -eq 503) { throw 'APIが利用できません（503）。Workerの設定とMICSの接続状態を確認してください。' }
             throw
         }
-        if ($null -eq $response.events) { throw "API không có trường events; không sửa Excel." }
+        if ($null -eq $response.events) { throw "API応答に予定データがありません。Excelは変更しません。" }
         return @($response.events)
     }
     $path = [string]$cfg.data_source.events_file
-    if (-not $path) { throw "Cần khai báo data_source.events_file hoặc api_url." }
+    if (-not $path) { throw "データ取得先を設定してください（events_fileまたはapi_url）。" }
     if (-not [System.IO.Path]::IsPathRooted($path)) { $path = Join-Path $baseDir $path }
-    if (-not (Test-Path -LiteralPath $path)) { throw "Không thấy nguồn lịch '$path'; không sửa Excel." }
+    if (-not (Test-Path -LiteralPath $path)) { throw "予定データが見つかりません: 「$path」。Excelは変更しません。" }
     $json = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($null -eq $json.events) { throw "events_file cần có danh sách events." }
+    if ($null -eq $json.events) { throw "予定データにevents配列がありません。" }
     return @($json.events)
 }
 # Repair only visibly corrupted color labels in rows already tracked by Excel Daily.
@@ -155,7 +155,7 @@ function RepairColorIfBroken($sheet, $cfg, $event, [int]$row) {
 function EventTime($event) {
     $t = [string]$event.time
     try { return RoundEventTimeUp $t }
-    catch { throw "Giờ không hợp lệ ($($event.id)): $t" }
+    catch { throw "時刻が正しくありません ($($event.id)): $t" }
 }
 . (Join-Path $PSScriptRoot 'color_cells.ps1')
 # Recover rows if a workbook was already filled manually or the Agent state
@@ -253,22 +253,22 @@ foreach ($e in $events) {
     if ([string]$e.shift -ne $Shift) { continue }
     # A carried-over event must explicitly target this shift. It retains its
     # stable event ID and original timestamp, despite the previous shift date.
-    if ([string]$e.kind -notin @("mold","color")) { throw "Loại lịch không hợp lệ: $($e.kind)" }
+    if ([string]$e.kind -notin @("mold","color")) { throw "予定種別が正しくありません: $($e.kind)" }
     if (-not $e.id -or -not $e.machine -or -not $e.scheduled_at) {
-        throw "Mỗi event cần id, machine, scheduled_at."
+        throw "予定にはid、machine、scheduled_atが必要です。"
     }
     $null = EventTime $e
     $usable += $e
 }
 $excel = [Runtime.InteropServices.Marshal]::GetActiveObject("Excel.Application")
-if ($null -eq $excel) { throw "Excel chưa được mở." }
+if ($null -eq $excel) { throw "Excelが起動していません。" }
 $book = PickWorkbook $excel $cfg $WorkbookFullName
 $sheetName = if ($Shift -eq "day") { [string]$cfg.sheets.day } else { [string]$cfg.sheets.night }
 $sheet = PickSheet $book $sheetName
 $start = if ($Shift -eq "day") { [int]$cfg.rows.day_start } else { [int]$cfg.rows.night_start }
 $step = [int]$cfg.rows.step
 $count = [int]$cfg.rows.max_entries
-if ($step -lt 1 -or $count -lt 1 -or $count -gt 100) { throw "Cấu hình rows không hợp lệ." }
+if ($step -lt 1 -or $count -lt 1 -or $count -gt 100) { throw "行の設定が正しくありません。" }
 $metadataPath = Join-Path $baseDir "excel-daily-state.json"
 $state = @{}
 if (Test-Path -LiteralPath $metadataPath) {
@@ -341,7 +341,7 @@ foreach ($e in $ordered) {
     # the time cell. Don't create a duplicate when the local ID mapping was lost.
     $adopt=FindExistingSlot $sheet $cfg $e $state $book $start $step $count $ordered $now $when $carryover
     if($adopt -lt 0) {
-        Write-Output "Ambiguous Excel rows: $kind / machine $machine / event $id; unchanged."
+        Write-Output "対応する行を特定できません: 種別=$kind / 設備=$machine / 予定=$id。変更しません。"
         $kept++
         continue
     }
@@ -371,7 +371,7 @@ foreach ($e in $ordered) {
         }
     }
     if ($emptyRow -eq 0) {
-        Write-Output "Không có dòng trống: $kind / máy $machine"
+        Write-Output "空き行がありません: 種別=$kind / 設備=$machine"
         continue
     }
     PutValue $sheet $machineCol $emptyRow $machine

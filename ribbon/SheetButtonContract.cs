@@ -43,7 +43,7 @@ namespace ExcelDailyRibbon
             if (String.IsNullOrWhiteSpace(path) || !Path.IsPathRooted(path) ||
                 !File.Exists(path))
                 throw new InvalidOperationException(
-                    "Lưu file Excel (.xlsx) vào ổ đĩa trước khi cập nhật.");
+                    "更新前にExcelファイル（.xlsx）を保存してください。");
             return Path.GetFullPath(path);
         }
     }

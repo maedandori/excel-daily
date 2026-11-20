@@ -4,6 +4,8 @@
     [switch]$Diagnose
 )
 $ErrorActionPreference='Stop'
+[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false)
+$OutputEncoding=[Console]::OutputEncoding
 $dir=Split-Path -Parent $MyInvocation.MyCommand.Path
 # Office 2019 is version 16.0 (also used by Microsoft 365).
 $key='HKCU:\Software\Microsoft\Office\16.0\Excel\Options'
@@ -21,17 +23,18 @@ function ReadArchitecture {
     $office64='HKLM:\SOFTWARE\Microsoft\Office\16.0\Excel\InstallRoot'
     if(Test-Path $office32){return 'x86'}
     if(Test-Path $office64){return 'x64'}
-    throw 'Không xác định được Excel 2019 32/64 bit. Chạy lại: .\install-ribbon.ps1 -Bitness x86 hoặc x64.'
+    throw 'Excel 2019の32/64ビットを判定できません。ビット数を指定して再実行してください: .\install-ribbon.ps1 -Bitness x86 hoặc x64.'
 }
 
 if($Diagnose){
-    Write-Output 'Excel Daily Ribbon diagnostics (read-only)'
-    Write-Output ('Install folder: '+$dir)
+    Write-Output 'RIBBON_DIAGNOSTICS_OK'
+    Write-Output 'Excel Daily リボンの診断（読み取り専用）'
+    Write-Output ('インストール先: '+$dir)
     foreach($name in @('excel-daily.exe','settings.json','ExcelDailyRibbon.xll','ExcelDailyRibbon64.xll')){
         Write-Output ($name+': '+(Test-Path -LiteralPath (Join-Path $dir $name)))
     }
-    try{ Write-Output ('Detected Excel architecture: '+(ReadArchitecture)) }
-    catch{ Write-Output ('Excel architecture unknown: '+$_.Exception.Message) }
+    try{ Write-Output ('Excelのビット数: '+(ReadArchitecture)) }
+    catch{ Write-Output ('Excelのビット数を判定できません: '+$_.Exception.Message) }
     if(Test-Path -LiteralPath $key){
         $item=Get-Item -LiteralPath $key
         foreach($entry in @($item.GetValueNames()|Where-Object{$_ -match '^OPEN\d*$'})){
@@ -41,18 +44,18 @@ if($Diagnose){
             }
         }
     } else {
-        Write-Output 'Excel Options registry key is not present.'
+        Write-Output 'Excelのアドイン登録情報が見つかりません。'
     }
-    Write-Output ('Excel processes currently open: '+@(Get-Process EXCEL -ErrorAction SilentlyContinue).Count)
-    Write-Output 'If installed but missing, inspect Excel File > Options > Add-ins > Disabled Items and Trust Center.'
+    Write-Output ('Excelの起動数: '+@(Get-Process EXCEL -ErrorAction SilentlyContinue).Count)
+    Write-Output 'リボンが表示されない場合は、Excelの「ファイル→オプション→アドイン」および「セキュリティセンター」を確認してください。'
     exit 0
 }
 if($Bitness -eq 'auto' -and -not $Remove){$Bitness=ReadArchitecture}
 $xllName=if($Bitness -eq 'x64'){'ExcelDailyRibbon64.xll'}else{'ExcelDailyRibbon.xll'}
 $xll=Join-Path $dir $xllName
-if(-not $Remove -and -not (Test-Path -LiteralPath $xll)){throw "Missing $xllName. Extract complete v0.3.5 ZIP, not only EXE."}
+if(-not $Remove -and -not (Test-Path -LiteralPath $xll)){throw "$xllNameが見つかりません。ZIPをすべて展開してください。"}
 if(-not $Remove -and -not (Test-Path -LiteralPath (Join-Path $dir 'excel-daily.exe'))){
-    throw 'Cần cài Excel Daily Agent cùng thư mục với Add-in.'
+    throw 'Excel Daily本体とアドインを同じフォルダーに配置してください。'
 }
 New-Item -Path $key -Force|Out-Null
 $registry=Get-Item -LiteralPath $key
@@ -64,27 +67,27 @@ foreach($name in $existing){
     if($value -like '*ExcelDailyRibbon*.xll*'){
         if($Remove){
             Remove-ItemProperty -LiteralPath $key -Name $name
-            Write-Output "Removed $name"
+            Write-Output "登録を解除しました: $name"
         } else {
             if($value -eq ('/R "'+$xll+'"')){
-                Write-Output "Already installed: $xll"
+                Write-Output "登録済み: $xll"
                 $found++
             }else{
                 # No automatic replacement of an XLL loaded in a running Excel process.
-                Write-Output "Another Excel Daily Ribbon is registered ($name). Remove it explicitly first."
-                throw 'Existing Excel Daily Ribbon registration conflicts with this installation.'
+                Write-Output "別のExcel Dailyリボンが登録されています（$name）。先に古い登録を解除してください。"
+                throw '既存のアドイン登録と競合しています。'
             }
         }
     }
 }
-if($Remove){Write-Output 'Ribbon unregistered. Restart Excel.';exit 0}
+if($Remove){Write-Output 'リボンの登録を解除しました。Excelを再起動してください。';exit 0}
 if($found -gt 0){exit 0}
 for($i=0;$i -lt 100;$i++){
     $name=if($i -eq 0){'OPEN'}else{'OPEN'+$i}
     if($name -notin $existing){
         New-ItemProperty -LiteralPath $key -Name $name -Value ('/R "'+$xll+'"') -PropertyType String -Force|Out-Null
-        Write-Output "Excel Daily Ribbon registered ($Bitness, $name). Restart Excel to see the tab."
+        Write-Output "Excel Dailyリボンを登録しました（$Bitness, $name）。Excelを再起動すると表示されます。"
         exit 0
     }
 }
-throw 'Không còn chỗ trống OPEN trong Excel registry options.'
+throw 'Excelのアドイン登録枠が不足しています。'
