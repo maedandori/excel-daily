@@ -283,3 +283,29 @@ The original Ctrl+1/Ctrl+2/Ctrl+3/Ctrl+4 hotkeys remain available.
 **Verification:** GitHub Windows CI checks that both packed 32/64-bit XLLs
 exist. Manual validation on a real installed Excel 2019 instance and a live
 authorized Worker is still necessary before production rollout.
+
+## v0.3.5 — automatic Excel 2019 Ribbon registration fix
+
+In v0.3.4 the Ribbon was included in the ZIP but only appeared after the user
+manually ran `install-ribbon.ps1`. On first launch of `excel-daily.exe`,
+v0.3.5 automatically registers the bundled XLL for the detected Excel bitness
+in the current user's Office 16.0 `OPEN*` options, with no VBA or admin rights.
+Existing unrelated Excel add-ins are preserved. Auto-update to v0.3.5
+copies the XLLs and installer before restarting the Agent. **Excel must be
+fully closed and restarted for the Ribbon tab to become visible.** If
+`excel-daily.exe` has not been started, run it once.
+
+Use the full ZIP rather than downloading only the EXE. For failures, run
+the following in PowerShell from the installation folder and inspect the
+`RIBBON_REGISTER_` lines in `excel-daily.log`:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-ribbon.ps1 -Diagnose
+```
+
+This diagnostic is read-only: reports whether bundled XLL files exist,
+detected Excel architecture, existing Add-in registry entries, and whether
+Excel is open. If the XLL is registered and still missing, use
+**ファイル > オプション > アドイン** to check Excel Add-ins and Disabled Items.
+An organizational security policy may block an XLL regardless of correct
+registration. The program does not disable Trust Center protections.
