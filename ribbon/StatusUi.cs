@@ -39,7 +39,7 @@ namespace ExcelDailyRibbon
                     try
                     {
                         if (DateTimeOffset.FromUnixTimeMilliseconds(latest.updated_ms).UtcDateTime >=
-                            _submittedUtc.AddSeconds(-1))
+                            _submittedUtc)
                             return false;
                     }
                     catch { }
