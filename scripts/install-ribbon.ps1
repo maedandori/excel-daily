@@ -1,4 +1,4 @@
-param(
+﻿param(
     [ValidateSet('auto','x86','x64')][string]$Bitness='auto',
     [switch]$Remove,
     [switch]$Diagnose
