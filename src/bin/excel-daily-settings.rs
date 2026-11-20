@@ -2,14 +2,9 @@
 #[cfg(not(windows))]
 compile_error!("Excel Daily Settings requires Windows.");
 use std::{env,fs,io::Write,os::windows::process::CommandExt,path::{Path,PathBuf},process::{Command,Stdio}};
-use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW,MB_OK,MB_ICONERROR};
+#[path = "../status.rs"]
+mod status;
 const CREATE_NO_WINDOW:u32=0x08000000;
-fn wide(s:&str)->Vec<u16>{s.encode_utf16().chain(std::iter::once(0)).collect()}
-fn report_problem(message:&str) {
- let title=wide("Excel Daily Settings Error");
- let body=wide(message);
- unsafe{MessageBoxW(std::ptr::null_mut(),body.as_ptr(),title.as_ptr(),MB_OK|MB_ICONERROR);}
-}
 fn log_event(dir:&Path,message:&str){
  let mut paths=vec![dir.join("excel-daily-settings.log")];
  if let Some(local)=env::var_os("LOCALAPPDATA") {
@@ -75,7 +70,7 @@ fn main(){
   Ok(())=>log_event(&dir,"EXE_EXIT_NORMAL"),
   Err(e)=>{
    log_event(&dir,&format!("EXE_EXIT_ERROR {e}"));
-   report_problem(&e);
+   status::write(&dir,"error","設定画面を起動できませんでした。詳細はexcel-daily-settings.logを確認してください。");
    std::process::exit(1);
   }
  }
