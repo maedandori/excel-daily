@@ -16,4 +16,6 @@ $cfg.drying.time_by_material.PC='2h'
 if((DryingTimeFromConfig $cfg @('ABS','PC')) -ne '2h'){throw 'Equal grade durations can be applied'}
 $main=Get-Content (Join-Path $PSScriptRoot '..\scripts\update_excel.ps1') -Raw -Encoding UTF8
 if($main -notmatch 'UpdateDryingTable' -or $main -notmatch 'DryingEntries'){throw 'Main update has lost drying support'}
+$agent=Get-Content (Join-Path $PSScriptRoot '..\src\main.rs') -Raw -Encoding UTF8
+if($agent -notmatch 'include_str!\("\.\./scripts/drying\.ps1"\)'){throw 'Auto-update EXE must embed drying.ps1; legacy updater only replaces EXE and XLL'}
 Write-Output 'DRYING_TESTS_OK'

@@ -450,3 +450,8 @@ therefore show 要確認 until approved values are placed under drying.time_by_m
 in local settings.json. Missing or conflicting resin rules also show 要確認; manually
 edited durations are never overwritten. Older settings.json files use safe defaults.
 The Machine-Control worker and MICS schedule material snapshots must be updated.
+
+Auto-update compatibility: the EXE embeds and restores the drying.ps1 helper
+on startup, including after upgrading from pre-0.3.11 releases whose installer
+replaced EXE/XLL without copying helper scripts. Local settings.json remains
+untouched by script restoration.

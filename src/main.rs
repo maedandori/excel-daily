@@ -258,6 +258,7 @@ fn main() -> anyhow::Result<()> {
     }
     // Embed scripts so the ZIP cannot accidentally ship mismatched helpers.
     fs::write(dir.join("update_excel.ps1"), include_str!("../scripts/update_excel.ps1"))?;
+    fs::write(dir.join("drying.ps1"), include_str!("../scripts/drying.ps1"))?;
     fs::write(dir.join("round_time.ps1"), include_str!("../scripts/round_time.ps1"))?;
     fs::write(dir.join("shift_date.ps1"), include_str!("../scripts/shift_date.ps1"))?;
     fs::write(dir.join("color_cells.ps1"), include_str!("../scripts/color_cells.ps1"))?;
