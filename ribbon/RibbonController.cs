@@ -95,7 +95,7 @@ namespace ExcelDailyRibbon
         {
             dynamic app = ExcelDnaUtil.Application;
             dynamic book = app.ActiveWorkbook;
-            if (book == null) throw new InvalidOperationException("Hãy mở file Excel cần cập nhật.");
+            if (book == null) throw new InvalidOperationException("更新するExcelファイルを開いてください。");
             return SheetButtonContract.RequireSavedWorkbook(Convert.ToString(book.FullName));
         }
 
@@ -105,17 +105,17 @@ namespace ExcelDailyRibbon
             object caller = app.Caller;
             string name = caller as string;
             if (String.IsNullOrWhiteSpace(name))
-                throw new InvalidOperationException("Chức năng chỉ chạy từ nút Shape trong worksheet.");
+                throw new InvalidOperationException("この操作はワークシート上のボタンから実行してください。");
             dynamic sheet = app.ActiveSheet;
             dynamic shape;
             try { shape = sheet.Shapes.Item(name); }
             catch (COMException)
             {
-                throw new InvalidOperationException("Không tìm thấy nút trong sheet đang mở.");
+                throw new InvalidOperationException("現在のシートで対象ボタンが見つかりません。");
             }
             if (!SheetButtonContract.IsKind(
                 Convert.ToString(shape.Name), Convert.ToString(shape.AlternativeText), kind))
-                throw new InvalidOperationException("Nút không thuộc loại cập nhật này. Hãy chọn ボタンを再設定.");
+                throw new InvalidOperationException("ボタンの種類が一致しません。「ボタンを再設定」を実行してください。");
             return SheetButtonContract.RequireSavedWorkbook(Convert.ToString(sheet.Parent.FullName));
         }
 
@@ -124,21 +124,21 @@ namespace ExcelDailyRibbon
             if (!StatusUi.Guard()) return;
             string dir = Path.GetDirectoryName(ExcelDnaUtil.XllPath);
             if (String.IsNullOrWhiteSpace(dir))
-                throw new InvalidOperationException("Không xác định được thư mục Add-in.");
+                throw new InvalidOperationException("アドインのインストール先が確認できません。");
             string agent = Path.Combine(dir, "excel-daily.exe");
             if (!File.Exists(agent) || !File.Exists(Path.Combine(dir, "settings.json")))
-                throw new FileNotFoundException("Thiếu Excel Daily Agent/settings.json. Cài bộ ZIP đầy đủ.");
+                throw new FileNotFoundException("Excel Daily本体またはsettings.jsonがありません。ZIP版をすべて展開してください。");
             // Fail closed: the 0.3.5 agent would ignore the workbook target and
             // might update another open file. Never silently use that old agent.
             string version = FileVersionInfo.GetVersionInfo(agent).FileVersion;
             Version parsed;
             if (!Version.TryParse(version, out parsed) || parsed.CompareTo(new Version(0, 3, 6)) < 0)
-                throw new InvalidOperationException("Excel Daily Agent phải là v0.3.6 trở lên.");
+                throw new InvalidOperationException("Excel Daily本体はv0.3.6以降が必要です。");
 
             workbookFullName = SheetButtonContract.RequireSavedWorkbook(workbookFullName);
             string queue = Path.Combine(dir, "excel-daily-command.json");
             if (File.Exists(queue) || File.Exists(Path.Combine(dir, "excel-daily-busy.lock")))
-                throw new InvalidOperationException("Excel Daily đang cập nhật hoặc đã có yêu cầu chờ xử lý.");
+                throw new InvalidOperationException("更新処理中です。完了するまでお待ちください。");
 
             // Use the JSON serializer to preserve Japanese / UNC paths and
             // avoid hand-built strings. The queue file is published atomically.
@@ -229,7 +229,7 @@ namespace ExcelDailyRibbon
             dynamic excel = ExcelDnaUtil.Application;
             dynamic sheet = excel.ActiveSheet;
             if (sheet == null || Convert.ToBoolean(sheet.ProtectDrawingObjects))
-                throw new InvalidOperationException("Sheet bị khóa hình vẽ; hãy mở bảo vệ trước.");
+                throw new InvalidOperationException("シートが保護されているためボタンを編集できません。保護を解除してください。");
             int dataCount = 0;
             int timeCount = 0;
             dynamic shapes = sheet.Shapes;
@@ -261,9 +261,9 @@ namespace ExcelDailyRibbon
                 if (timeCount == 0) { Add(sheet, "time", left + 150f, top); timeCount++; }
             }
             if (dataCount + timeCount == 0)
-                throw new InvalidOperationException("Sheet này chưa có nút Excel Daily để gắn lại.");
-            excel.StatusBar = "Excel Daily: đã gắn lệnh cho " +
-                dataCount + " nút dữ liệu và " + timeCount + " nút thời gian.";
+                throw new InvalidOperationException("このシートに再設定できるExcel Dailyボタンがありません。");
+            excel.StatusBar = "Excel Daily: ボタンの再設定が完了しました。データ更新: " +
+                dataCount + "件、時刻更新: " + timeCount + "件。";
         }
     }
 }
