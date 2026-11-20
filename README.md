@@ -349,3 +349,29 @@ confirm two Shapes appear, are resizable, survive copy to another workbook,
 and only update the clicked file. The backend remains the authenticated
 Cloudflare Worker -> selected Turso/D1 MICS storage, never a direct
 database token in Excel.
+
+## v0.3.7 — Nonmodal StatusBar and disable repeat updates
+
+During a Data/Time/Tomorrow update, all five EXCEL-DAILY Ribbon actions
+are disabled (gray) and all worksheet Shape callbacks ignore duplicate
+clicks. A new lightweight Excel-DNA UI timer monitors
+`excel-daily-command.json`, `excel-daily-busy.lock` and
+`excel-daily-status.json`. The Rust Agent writes shift progress, success
+or error to the JSON status channel and the XLL displays it in **Excel's
+bottom StatusBar**, not a blocking message box. Previous success is not
+replayed when Excel restarts. A failure also stays in `excel-daily.log`.
+A successful operation restores Ribbon availability automatically.
+Worksheet Shapes keep their saved colors/size/OnAction (no temporary
+formatting changes that could accidentally be saved into the workbook).
+
+The next-day command is explicitly initiated by a Ribbon button or a
+hotkey and no longer opens a confirmation dialog. For legacy hotkeys with
+multiple matching workbooks, the command reports an error instead of
+opening a modal workbook picker; use a workbook-specific Ribbon/Shape
+button or select the workbook in Settings.
+
+Automated Windows CI tests Rust status-message JSON, PowerShell syntax,
+existing shifts/time/color logic, Add-in x86/x64 packing, and scans
+operation paths to ensure they do not show a MessageBox/InputBox. Live
+Excel 2019 StatusBar rendering and disabled-state behavior still require
+manual end-to-end validation on the production work PC.

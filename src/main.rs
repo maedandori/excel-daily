@@ -14,14 +14,11 @@ use std::{
     os::windows::process::CommandExt,
 };
 use serde::Deserialize;
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetMessageW, MessageBoxW, MSG, MB_ICONINFORMATION, MB_OK,
-    WM_HOTKEY, MB_ICONQUESTION, MB_YESNO, IDYES,
-};
+use windows_sys::Win32::UI::WindowsAndMessaging::{GetMessageW, MSG, WM_HOTKEY};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey};
-const MOD_CONTROL: u32 = 0x0002;
 use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 mod hotkeys;
+mod status;
 use hotkeys::{HotkeyOptions,validate_hotkeys};
 
 const DAY_ID: i32 = 0x5101;
@@ -70,14 +67,6 @@ fn log(dir: &Path, message: &str) {
         let _ = writeln!(f, "{:?}: {}", std::time::SystemTime::now(), message);
     }
 }
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
-}
-fn info(msg: &str) {
-    let msg = wide(msg);
-    let title = wide("Excel Daily");
-    unsafe { MessageBoxW(std::ptr::null_mut(), msg.as_ptr(), title.as_ptr(), MB_OK | MB_ICONINFORMATION); }
-}
 fn set_autostart(enabled: bool, exe: &Path) -> anyhow::Result<()> {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let (run, _) = hkcu.create_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Run")?;
@@ -93,26 +82,26 @@ fn set_autostart(enabled: bool, exe: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 const CREATE_NO_WINDOW: u32 = 0x08000000;
-fn confirm_tomorrow() -> bool {
-    let msg = wide("Ghi lịch thay khuôn / thay màu NGÀY MAI (cả ca ngày và ca đêm) vào file Excel ĐANG MỞ?\\nHãy chắc chắn đây là workbook dành cho ngày mai. Các dòng cũ sẽ không bị ghi đè.");
-    let title=wide("Excel Daily - Tomorrow / 翌日の予定");
-    unsafe { MessageBoxW(std::ptr::null_mut(),msg.as_ptr(),title.as_ptr(),MB_YESNO|MB_ICONQUESTION)==IDYES }
-}
+// Operation commands never block Excel with Windows message boxes. The
+// XLL reads progress, success and errors from excel-daily-status.json.
 fn call_excel(dir: PathBuf, action: &'static str, busy: Arc<AtomicBool>, workbook_target: Option<String>) {
-    if action=="tomorrow" && !confirm_tomorrow() {
-        log(&dir,"Tomorrow import cancelled by operator.");
-        busy.store(false,Ordering::SeqCst);
-        return;
-    }
     let script = dir.join("update_excel.ps1");
     let config = dir.join("settings.json");
-    let busy_file=dir.join("excel-daily-busy.lock");
-    let _=fs::write(&busy_file,std::process::id().to_string());
-    let shifts: &[&str] = if matches!(action, "all" | "refresh_times" | "tomorrow") { &["day", "night"] } else { &[action] };
-    let mut failures = Vec::new();
-    for shift in shifts {
+    let busy_file = dir.join("excel-daily-busy.lock");
+    let _ = fs::write(&busy_file, std::process::id().to_string());
+    status::write(&dir, "running", "更新中 — đang đọc lịch và cập nhật Excel...");
+    let shifts: &[&str] = if matches!(action, "all" | "refresh_times" | "tomorrow") {
+        &["day", "night"]
+    } else { &[action] };
+    let mut failures: Vec<String> = Vec::new();
+    let mut results: Vec<String> = Vec::new();
+    for (index, shift) in shifts.iter().enumerate() {
+        status::write(&dir, "running", &format!(
+            "更新中 — ca {}/{} ({})", index + 1, shifts.len(),
+            if *shift == "day" { "昼勤" } else { "夜勤" }));
         let mut command = Command::new("powershell.exe");
-        command.args(["-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File"])
+        command.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
+            "-ExecutionPolicy", "Bypass", "-File"])
             .arg(&script).arg("-Settings").arg(&config).arg("-Shift").arg(shift)
             .creation_flags(CREATE_NO_WINDOW).stdin(Stdio::null());
         if action == "refresh_times" { command.arg("-TimeOnly"); }
@@ -124,21 +113,36 @@ fn call_excel(dir: PathBuf, action: &'static str, busy: Arc<AtomicBool>, workboo
             Ok(o) => {
                 let out = String::from_utf8_lossy(&o.stdout);
                 let err = String::from_utf8_lossy(&o.stderr);
-                log(&dir, &format!("{} action={} status={} stdout={} stderr={}", shift, action, o.status, out.trim(), err.trim()));
-                if !o.status.success() { failures.push(*shift); }
+                log(&dir, &format!("{} action={} status={} stdout={} stderr={}",
+                    shift, action, o.status, out.trim(), err.trim()));
+                if o.status.success() {
+                    let summary = out.lines().find(|line|line.contains("added="))
+                        .unwrap_or("Excel đã cập nhật");
+                    results.push(format!("{} {}", shift, status::status_message(summary)));
+                } else {
+                    let detail = err.lines().find(|line|!line.trim().is_empty())
+                        .or_else(||out.lines().find(|line|!line.trim().is_empty()))
+                        .unwrap_or("Hãy kiểm tra excel-daily.log");
+                    failures.push(format!("{}: {}", shift, status::status_message(detail)));
+                }
             }
             Err(e) => {
                 log(&dir, &format!("{} action={} powershell failed: {}", shift, action, e));
-                failures.push(*shift);
+                failures.push(format!("{}: {}", shift, e));
             }
         }
     }
-    if !failures.is_empty() {
-        info(&format!("Excel Daily lỗi khi cập nhật {}. Xem excel-daily.log.", failures.join(", ")));
+    if failures.is_empty() {
+        status::write(&dir, "success",
+            &format!("更新完了 — hoàn tất {}. {}", shifts.len(), results.join("; ")));
+    } else {
+        status::write(&dir, "error",
+            &format!("更新エラー — {}. Xem excel-daily.log", failures.join("; ")));
     }
-    let _=fs::remove_file(&busy_file);
+    let _ = fs::remove_file(&busy_file);
     busy.store(false, Ordering::SeqCst);
 }
+
 fn check_for_update(dir: &Path, exe: &Path, repo: &str) -> bool {
     let mut command = Command::new("powershell.exe");
     let output = command
@@ -237,11 +241,11 @@ fn main() -> anyhow::Result<()> {
     let _=fs::write(&version_path,serde_json::to_string_pretty(&version_info)?);
     log(&dir, &format!("Agent started. v{}",env!("CARGO_PKG_VERSION")));
     if !cfg.app.run_in_background || cfg.app.show_status_on_start {
-        info(&format!("Excel Daily v{} đang chạy.\\n{}: ca ngày\\n{}: ca đêm\\n{}: chỉ cập nhật giờ\\n{}: lịch NGÀY MAI (cả 2 ca)",env!("CARGO_PKG_VERSION"),cfg.hotkeys.day,cfg.hotkeys.night,cfg.hotkeys.refresh,cfg.hotkeys.tomorrow));
+        log(&dir, "Agent ready; Excel Ribbon shows status without modal startup dialogs.");
     }
     let shortcuts=match validate_hotkeys(&cfg.hotkeys){
         Ok(codes)=>codes,
-        Err(e)=>{log(&dir,&format!("Hotkey configuration error: {e}"));info(&e);anyhow::bail!(e)}
+        Err(e)=>{log(&dir,&format!("Hotkey configuration error: {e}"));status::write(&dir,"error",&e);anyhow::bail!(e)}
     };
     let configured=[
         (DAY_ID,cfg.hotkeys.day.as_str(),shortcuts[0]),
@@ -255,7 +259,7 @@ fn main() -> anyhow::Result<()> {
         if ok==0 {
             for prev in registered {unsafe{UnregisterHotKey(std::ptr::null_mut(),prev)};}
             let msg=format!("Cannot register hotkey {}. It may already be used by another app. Change it in Excel Daily Settings.",label);
-            log(&dir,&msg);info(&msg);
+            log(&dir,&msg);status::write(&dir,"error",&msg);
             anyhow::bail!(msg);
         }
         registered.push(id);
@@ -337,6 +341,7 @@ fn main() -> anyhow::Result<()> {
                         if !std::path::Path::new(full_name).is_absolute() {
                             queue_busy.store(false,Ordering::SeqCst);
                             log(&queue_dir,"Invalid Ribbon workbook target; request dropped.");
+                            status::write(&queue_dir,"error","Workbook không hợp lệ; không sửa Excel.");
                             continue;
                         }
                     }
@@ -344,6 +349,7 @@ fn main() -> anyhow::Result<()> {
                 } else {
                     queue_busy.store(false,Ordering::SeqCst);
                     log(&queue_dir,"Invalid Ribbon/Settings command ignored.");
+                    status::write(&queue_dir,"error","Lệnh không hợp lệ; không sửa Excel.");
                 }
             }
             thread::sleep(Duration::from_secs(2));

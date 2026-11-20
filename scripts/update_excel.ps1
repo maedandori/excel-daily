@@ -10,7 +10,6 @@ $ErrorActionPreference = "Stop"
 # which corrupts Japanese file paths when Rust reads them as UTF-8.
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $OutputEncoding = [Console]::OutputEncoding
-Add-Type -AssemblyName Microsoft.VisualBasic
 Add-Type -AssemblyName System.Windows.Forms
 
 # Cache Excel COM references; merged cells use their actual top-left value cell.
@@ -76,20 +75,9 @@ function PickWorkbook($excel, $config, [string]$requestedFullName='') {
         throw "Workbook đã chọn '$selected' chưa mở. Không ghi sang workbook khác."
     }
     if ($matches.Count -eq 1) { return $matches[0] }
-    if ($config.workbook.choose_if_multiple -eq $false) {
-        throw "Có nhiều workbook phù hợp; hãy đặt selected_workbook trong settings.json."
-    }
-    $lines = for ($i=0; $i -lt $matches.Count; $i++) {
-        "$($i+1). $($matches[$i].Name)  [$($matches[$i].FullName)]"
-    }
-    $message = "Chọn file Excel đang mở để cập nhật (nhập số):" + [Environment]::NewLine +
-        ($lines -join [Environment]::NewLine)
-    $answer = [Microsoft.VisualBasic.Interaction]::InputBox($message, "Excel Daily - chọn workbook", "1")
-    $choice = 0
-    if (-not [int]::TryParse($answer, [ref]$choice) -or $choice -lt 1 -or $choice -gt $matches.Count) {
-        throw "Đã hủy chọn workbook; không thay đổi Excel."
-    }
-    return $matches[$choice-1]
+    # No modal workbook picker. An ambiguous legacy hotkey must stop safely;
+    # a clicked Shape or Ribbon button always passes its exact workbook path.
+    throw "Có nhiều workbook đang mở. Bấm nút trong workbook cần cập nhật hoặc đặt selected_workbook trong Settings."
 }
 function PickSheet($book, [string]$wanted) {
     foreach ($sheet in $book.Worksheets) {

@@ -17,30 +17,35 @@ namespace ExcelDailyRibbon
     {
         public override string GetCustomUI(string ribbonId)
         {
-            return @"<customUI xmlns='http://schemas.microsoft.com/office/2006/01/customui'>
+            return @"<customUI xmlns='http://schemas.microsoft.com/office/2006/01/customui' onLoad='RibbonLoaded'>
               <ribbon><tabs>
                 <tab id='excelDaily' label='EXCEL-DAILY'>
                   <group id='updates' label='MICS 予定 / 更新'>
                     <button id='refreshData' label='データ更新' size='large'
-                      imageMso='RefreshAll' onAction='OnUpdate'/>
+                      imageMso='RefreshAll' getEnabled='IsCommandEnabled' onAction='OnUpdate'/>
                     <button id='refreshTime' label='時間更新' size='large'
-                      imageMso='RefreshAll' onAction='OnUpdate'/>
+                      imageMso='RefreshAll' getEnabled='IsCommandEnabled' onAction='OnUpdate'/>
                     <button id='tomorrow' label='翌日予定' size='large'
-                      imageMso='RefreshAll' onAction='OnUpdate'/>
+                      imageMso='RefreshAll' getEnabled='IsCommandEnabled' onAction='OnUpdate'/>
                   </group>
                   <group id='sheetButtons' label='シート上のボタン'>
                     <button id='installButtons' label='シートにボタン追加'
-                      onAction='OnUpdate'/>
+                      getEnabled='IsCommandEnabled' onAction='OnUpdate'/>
                     <button id='repairButtons' label='ボタンを再設定'
-                      imageMso='RefreshAll' onAction='OnUpdate'/>
+                      imageMso='RefreshAll' getEnabled='IsCommandEnabled' onAction='OnUpdate'/>
                   </group>
                 </tab>
               </tabs></ribbon>
             </customUI>";
         }
 
+        public void RibbonLoaded(IRibbonUI ribbon) { StatusUi.SetRibbon(ribbon); }
+
+        public bool IsCommandEnabled(IRibbonControl control) { return StatusUi.IsCommandEnabled(control); }
+
         public void OnUpdate(IRibbonControl control)
         {
+            if (!StatusUi.Guard()) return;
             try
             {
                 switch (control.Id)
@@ -73,6 +78,7 @@ namespace ExcelDailyRibbon
         [ExcelCommand(Name = SheetButtonContract.DataCommand, Description = "Excel Daily refresh selected workbook")]
         public static void RefreshClickedSheet()
         {
+            if (!StatusUi.Guard()) return;
             try { QueueAction("all", ClickedShapeWorkbookPath("data")); }
             catch (Exception ex) { DisplayError(ex); }
         }
@@ -80,6 +86,7 @@ namespace ExcelDailyRibbon
         [ExcelCommand(Name = SheetButtonContract.TimeCommand, Description = "Excel Daily update pending times")]
         public static void RefreshClickedTimes()
         {
+            if (!StatusUi.Guard()) return;
             try { QueueAction("refresh_times", ClickedShapeWorkbookPath("time")); }
             catch (Exception ex) { DisplayError(ex); }
         }
@@ -114,6 +121,7 @@ namespace ExcelDailyRibbon
 
         internal static void QueueAction(string action, string workbookFullName)
         {
+            if (!StatusUi.Guard()) return;
             string dir = Path.GetDirectoryName(ExcelDnaUtil.XllPath);
             if (String.IsNullOrWhiteSpace(dir))
                 throw new InvalidOperationException("Không xác định được thư mục Add-in.");
@@ -165,14 +173,12 @@ namespace ExcelDailyRibbon
                     throw;
                 }
             }
-            dynamic excel = ExcelDnaUtil.Application;
-            excel.StatusBar = "Excel Daily: cập nhật " + Path.GetFileName(workbookFullName) +
-                " đã được yêu cầu; kiểm tra excel-daily.log để biết kết quả.";
+            StatusUi.Submitted(Path.GetFileName(workbookFullName));
         }
 
         internal static void DisplayError(Exception ex)
         {
-            MessageBox.Show(ex.Message, "Excel Daily", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            StatusUi.ShowError(ex);
         }
 
         private static bool IsAgentRunning(string executable)
