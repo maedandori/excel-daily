@@ -1,11 +1,14 @@
 name: Build Windows EXE
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
     paths:
       - 'src/**'
       - 'scripts/**'
+      - 'ribbon/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'build.rs'
@@ -32,7 +35,7 @@ jobs:
       - name: Validate PowerShell syntax
         shell: pwsh
         run: |
-          foreach ($file in @('scripts/update_excel.ps1','scripts/check_update.ps1','scripts/apply_update.ps1','scripts/round_time.ps1','scripts/agent_presence.ps1','scripts/settings_gui.ps1','scripts/color_cells.ps1','scripts/shift_date.ps1','scripts/settings_update_state.ps1')) {
+          foreach ($file in @('scripts/update_excel.ps1','scripts/check_update.ps1','scripts/apply_update.ps1','scripts/round_time.ps1','scripts/agent_presence.ps1','scripts/settings_gui.ps1','scripts/color_cells.ps1','scripts/shift_date.ps1','scripts/settings_update_state.ps1','scripts/install-ribbon.ps1')) {
             $tokens=$null; $errors=$null
             [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file),[ref]$tokens,[ref]$errors) | Out-Null
             if ($errors.Count -gt 0) { $errors | Format-List | Out-String | Write-Error; exit 1 }
@@ -56,6 +59,17 @@ jobs:
         run: cargo test --target x86_64-pc-windows-msvc
       - name: Build release with embedded icon
         run: cargo build --release --target x86_64-pc-windows-msvc
+      - name: Build Excel 2019 Ribbon Add-in (x86 and x64, VBA-free)
+        shell: pwsh
+        run: |
+          dotnet build ribbon/ExcelDailyRibbon.csproj --configuration Release
+          if ($LASTEXITCODE -ne 0) { throw 'Ribbon build failed' }
+          $packed=@(Get-ChildItem -Path ribbon/bin/Release -Recurse -File -Filter '*packed.xll')
+          $x86=@($packed|Where-Object{$_.Name -notmatch '64'})
+          $x64=@($packed|Where-Object{$_.Name -match '64'})
+          if ($x86.Count -ne 1 -or $x64.Count -ne 1) {
+            throw "Expected one packed Ribbon XLL per Excel bitness, found x86=$($x86.Count) x64=$($x64.Count)"
+          }
       - name: Package
         shell: pwsh
         run: |
@@ -66,6 +80,9 @@ jobs:
           Copy-Item events.example.json dist/
           Copy-Item README.md dist/
           Copy-Item scripts/*.ps1 dist/
+          $packed=@(Get-ChildItem -Path ribbon/bin/Release -Recurse -File -Filter '*packed.xll')
+          Copy-Item ($packed|Where-Object{$_.Name -notmatch '64'}|Select-Object -First 1).FullName dist/ExcelDailyRibbon.xll
+          Copy-Item ($packed|Where-Object{$_.Name -match '64'}|Select-Object -First 1).FullName dist/ExcelDailyRibbon64.xll
           Compress-Archive -Path dist/* -DestinationPath excel-daily-windows.zip -Force
           (Get-FileHash -Algorithm SHA256 dist/excel-daily.exe).Hash.ToLower() | Set-Content -Path excel-daily.exe.sha256 -Encoding ascii -NoNewline
           (Get-FileHash -Algorithm SHA256 excel-daily-windows.zip).Hash.ToLower() | Set-Content -Path excel-daily-windows.zip.sha256 -Encoding ascii -NoNewline
