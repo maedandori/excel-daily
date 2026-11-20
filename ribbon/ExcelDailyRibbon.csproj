@@ -10,6 +10,7 @@
     <ExcelDnaCreate64BitAddIn>true</ExcelDnaCreate64BitAddIn>
   </PropertyGroup>
   <ItemGroup>
+    <Reference Include="System.Windows.Forms" />
     <PackageReference Include="ExcelDna.AddIn" Version="1.9.0" />
   </ItemGroup>
 </Project>
