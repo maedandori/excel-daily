@@ -30,10 +30,21 @@ namespace ExcelDailyRibbon
             get
             {
                 EnsureDirectory();
-                return File.Exists(Path.Combine(_directory, "excel-daily-command.json")) ||
-                       File.Exists(Path.Combine(_directory, "excel-daily-busy.lock")) ||
-                       (_submittedUtc != DateTime.MinValue &&
-                        (DateTime.UtcNow - _submittedUtc).TotalSeconds < 5);
+                if (File.Exists(Path.Combine(_directory, "excel-daily-command.json")) ||
+                    File.Exists(Path.Combine(_directory, "excel-daily-busy.lock"))) return true;
+                if (_submittedUtc == DateTime.MinValue) return false;
+                AgentStatus latest = Read();
+                if (latest != null && (latest.state == "success" || latest.state == "error"))
+                {
+                    try
+                    {
+                        if (DateTimeOffset.FromUnixTimeMilliseconds(latest.updated_ms).UtcDateTime >=
+                            _submittedUtc.AddSeconds(-1))
+                            return false;
+                    }
+                    catch { }
+                }
+                return (DateTime.UtcNow - _submittedUtc).TotalSeconds < 5;
             }
         }
 
@@ -115,7 +126,7 @@ namespace ExcelDailyRibbon
             catch (InvalidOperationException) { }
         }
 
-        private sealed class AgentStatus
+        public sealed class AgentStatus
         {
             public string state { get; set; }
             public string message { get; set; }
@@ -155,7 +166,10 @@ namespace ExcelDailyRibbon
                 string statusMessage = "Excel Daily: " + status.message;
                 if (busy)
                 {
-                    if (!String.Equals(_lastShown, statusMessage, StringComparison.Ordinal))
+                    // Ignore the previous task's completed status while the
+                    // next request is queued but not yet picked up by Agent.
+                    if (status.state == "running" &&
+                        !String.Equals(_lastShown, statusMessage, StringComparison.Ordinal))
                         Show(statusMessage);
                     return;
                 }
