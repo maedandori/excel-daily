@@ -375,3 +375,40 @@ existing shifts/time/color logic, Add-in x86/x64 packing, and scans
 operation paths to ensure they do not show a MessageBox/InputBox. Live
 Excel 2019 StatusBar rendering and disabled-state behavior still require
 manual end-to-end validation on the production work PC.
+
+## v0.3.8 — 日本語表示とExcelを保護する自動更新
+
+**表示言語:** Excelのステータスバー、リボン、ワークシート上のボタン、
+設定画面、更新状態、エラー表示を日本語に統一しました。
+処理中もメッセージボックスは表示せず、エラー詳細はログに保存します。
+設定画面が起動できない場合も、Excelのステータスバーで
+`excel-daily-settings.log` の参照を案内します。
+
+**自動更新は継続します:** `settings.json` の
+`auto_update.enabled=true` と `check_interval_hours=6` は変更しません。
+管理者からの更新要求も引き続き受け付けます。
+
+**Excelで作業している場合の安全処理:**
+
+- Excel.exe が起動中、`excel-daily-busy.lock` が存在する、
+  または更新コマンドが待機中の場合は**インストールを保留**します。
+- Excelが開いている間はEXEとXLLを置き換えません。自動更新は
+  約2分ごとにExcelの終了を再確認し、終了後に更新の有無を確認します。
+  通常時のGitHub Releaseチェックは6時間ごとです。
+- 更新の直前にも安全性を再確認し、EXE、設定EXE、
+  32/64bit XLLを**1セットとして**バックアップして置き換えます。
+  コピーや起動に失敗した場合は以前のファイルへの復旧を試み、
+  `excel-daily-updater.log` に記録します。
+- Excelの作業や開いているブックは強制終了しません。
+  更新終了後はExcelを再起動して新しいアドインを読み込んでください。
+- 更新保留の通知（`UPDATE_DEFERRED`）は設定画面では日本語で表示し、
+  更新リクエストを「適用済み」と誤って扱いません。
+
+**既存の v0.3.7 からの最初の更新:** v0.3.7 の旧更新プログラムには
+XLL置換を保留する新しい安全制御がありません。v0.3.8 への初回更新は
+Excelをすべて閉じた状態で行い、`excel-daily-windows.zip` を使用するのが
+最も安全です。`settings.json`（認証情報と設定）は上書きしないでください。
+
+Windows CIでPowerShell 5.1の文法、更新保留ロジック、
+Rust/C#ビルドと日本語メッセージを検証します。
+実機のExcel 2019での操作確認は引き続き必要です。
