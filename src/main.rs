@@ -89,7 +89,7 @@ fn call_excel(dir: PathBuf, action: &'static str, busy: Arc<AtomicBool>, workboo
     let config = dir.join("settings.json");
     let busy_file = dir.join("excel-daily-busy.lock");
     let _ = fs::write(&busy_file, std::process::id().to_string());
-    status::write(&dir, "running", "更新中 — đang đọc lịch và cập nhật Excel...");
+    status::write(&dir, "running", "更新中：生産予定を取得し、Excelに反映しています。");
     let shifts: &[&str] = if matches!(action, "all" | "refresh_times" | "tomorrow") {
         &["day", "night"]
     } else { &[action] };
@@ -97,7 +97,7 @@ fn call_excel(dir: PathBuf, action: &'static str, busy: Arc<AtomicBool>, workboo
     let mut results: Vec<String> = Vec::new();
     for (index, shift) in shifts.iter().enumerate() {
         status::write(&dir, "running", &format!(
-            "更新中 — ca {}/{} ({})", index + 1, shifts.len(),
+            "更新中：{}/{}（{}）", index + 1, shifts.len(),
             if *shift == "day" { "昼勤" } else { "夜勤" }));
         let mut command = Command::new("powershell.exe");
         command.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
@@ -116,37 +116,48 @@ fn call_excel(dir: PathBuf, action: &'static str, busy: Arc<AtomicBool>, workboo
                 log(&dir, &format!("{} action={} status={} stdout={} stderr={}",
                     shift, action, o.status, out.trim(), err.trim()));
                 if o.status.success() {
-                    let summary = out.lines().find(|line|line.contains("added="))
-                        .unwrap_or("Excel đã cập nhật");
-                    results.push(format!("{} {}", shift, status::status_message(summary)));
+                    let summary = out.lines().find(|line|line.contains("added=")).unwrap_or("");
+                    let count = |name: &str| -> String {
+                        summary.split(';').find_map(|part| {
+                            part.trim().strip_prefix(name).and_then(|x|
+                                x.trim().split_whitespace().next())
+                                .filter(|x| x.chars().all(|c| c.is_ascii_digit()))
+                                .map(str::to_owned)
+                        }).unwrap_or_else(|| "0".to_owned())
+                    };
+                    let label = if *shift == "day" { "昼勤" } else { "夜勤" };
+                    results.push(format!("{label}：新規{}件・時刻変更{}件・保持{}件",
+                        count("added="), count("updated_times="), count("preserved=")));
                 } else {
-                    let detail = err.lines().find(|line|!line.trim().is_empty())
-                        .or_else(||out.lines().find(|line|!line.trim().is_empty()))
-                        .unwrap_or("Hãy kiểm tra excel-daily.log");
-                    failures.push(format!("{}: {}", shift, status::status_message(detail)));
+                    failures.push(format!("{}の更新に失敗しました",
+                        if *shift == "day" { "昼勤" } else { "夜勤" }));
                 }
             }
             Err(e) => {
                 log(&dir, &format!("{} action={} powershell failed: {}", shift, action, e));
-                failures.push(format!("{}: {}", shift, e));
+                failures.push(format!("{}の更新に失敗しました",
+                    if *shift == "day" { "昼勤" } else { "夜勤" }));
             }
         }
     }
     if failures.is_empty() {
         status::write(&dir, "success",
-            &format!("更新完了 — hoàn tất {}. {}", shifts.len(), results.join("; ")));
+            &format!("更新完了：{}。", results.join("／")));
     } else {
         status::write(&dir, "error",
-            &format!("更新エラー — {}. Xem excel-daily.log", failures.join("; ")));
+            &format!("更新エラー：{}。詳細はexcel-daily.logを確認してください。", failures.join("、")));
     }
     let _ = fs::remove_file(&busy_file);
     busy.store(false, Ordering::SeqCst);
 }
 
-fn check_for_update(dir: &Path, exe: &Path, repo: &str) -> bool {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UpdateDecision { Ready, Deferred, NoChange }
+
+fn check_for_update(dir: &Path, exe: &Path, repo: &str) -> UpdateDecision {
     let mut command = Command::new("powershell.exe");
     let output = command
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
         .arg(dir.join("check_update.ps1"))
         .arg("-Executable").arg(exe)
         .arg("-CurrentVersion").arg(env!("CARGO_PKG_VERSION"))
@@ -160,14 +171,23 @@ fn check_for_update(dir: &Path, exe: &Path, repo: &str) -> bool {
             let stdout = String::from_utf8_lossy(&o.stdout);
             if !o.status.success() {
                 log(dir, &format!("Update check failed: {}", String::from_utf8_lossy(&o.stderr)));
+                status::write(dir, "error", "更新の確認に失敗しました。詳細はexcel-daily.logを確認してください。");
+            } else if stdout.contains("UPDATE_DEFERRED") {
+                log(dir, "UPDATE_DEFERRED: Excel open or workbook task active.");
+                status::write(dir, "deferred", "自動更新を保留しました。Excelを閉じると再確認します。");
+                return UpdateDecision::Deferred;
             } else if stdout.contains("UPDATE_READY") {
                 log(dir, "A verified update is staged; exiting for replacement.");
-                return true;
+                status::write(dir, "running", "更新ファイルの確認が完了しました。安全に更新を適用しています。");
+                return UpdateDecision::Ready;
             }
         }
-        Err(e) => log(dir, &format!("Update check unavailable: {e}")),
+        Err(e) => {
+            log(dir, &format!("Update check unavailable: {e}"));
+            status::write(dir, "error", "更新の確認を開始できませんでした。詳細はログを確認してください。");
+        }
     }
-    false
+    UpdateDecision::NoChange
 }
 // Ribbon is installed per-user, without administrative permissions or VBA.
 // Do not treat Office Add-in policy failures as fatal for the original hotkeys.
@@ -234,6 +254,7 @@ fn main() -> anyhow::Result<()> {
     fs::write(dir.join("agent_presence.ps1"), include_str!("../scripts/agent_presence.ps1"))?;
     fs::write(dir.join("check_update.ps1"), include_str!("../scripts/check_update.ps1"))?;
     fs::write(dir.join("apply_update.ps1"), include_str!("../scripts/apply_update.ps1"))?;
+    fs::write(dir.join("update_safety.ps1"), include_str!("../scripts/update_safety.ps1"))?;
     fs::write(dir.join("install-ribbon.ps1"), include_str!("../scripts/install-ribbon.ps1"))?;
     ensure_ribbon_registered(&dir);
     let version_path=dir.join("excel-daily-version.json");
@@ -245,7 +266,7 @@ fn main() -> anyhow::Result<()> {
     }
     let shortcuts=match validate_hotkeys(&cfg.hotkeys){
         Ok(codes)=>codes,
-        Err(e)=>{log(&dir,&format!("Hotkey configuration error: {e}"));status::write(&dir,"error",&e);anyhow::bail!(e)}
+        Err(e)=>{log(&dir,&format!("Hotkey configuration error: {e}"));status::write(&dir,"error","ショートカットキーの設定が正しくありません。設定画面をご確認ください。");anyhow::bail!(e)}
     };
     let configured=[
         (DAY_ID,cfg.hotkeys.day.as_str(),shortcuts[0]),
@@ -258,7 +279,7 @@ fn main() -> anyhow::Result<()> {
         let ok=unsafe{RegisterHotKey(std::ptr::null_mut(),id,shortcut.modifiers,shortcut.key)};
         if ok==0 {
             for prev in registered {unsafe{UnregisterHotKey(std::ptr::null_mut(),prev)};}
-            let msg=format!("Cannot register hotkey {}. It may already be used by another app. Change it in Excel Daily Settings.",label);
+            let msg=format!("ショートカットキー「{}」を登録できません。他のアプリと重複していないか設定画面で確認してください。",label);
             log(&dir,&msg);status::write(&dir,"error",&msg);
             anyhow::bail!(msg);
         }
@@ -272,17 +293,19 @@ fn main() -> anyhow::Result<()> {
         let update_repo = cfg.auto_update.repository.clone();
         let hours = cfg.auto_update.check_interval_hours.clamp(1, 168);
         thread::spawn(move || {
-            // Wait until startup is complete. Updates never interrupt Excel writes.
+            // Excel running: retry cheaply (no network) until user closes it.
             thread::sleep(Duration::from_secs(60));
             loop {
+                let mut deferred = false;
                 if !update_busy.swap(true, Ordering::SeqCst) {
-                    if check_for_update(&update_dir, &update_exe, &update_repo) {
-                        // The detached helper waits for this process to exit.
-                        std::process::exit(0);
+                    match check_for_update(&update_dir, &update_exe, &update_repo) {
+                        UpdateDecision::Ready => std::process::exit(0),
+                        UpdateDecision::Deferred => deferred = true,
+                        UpdateDecision::NoChange => {}
                     }
                     update_busy.store(false, Ordering::SeqCst);
                 }
-                thread::sleep(Duration::from_secs(hours * 3600));
+                thread::sleep(Duration::from_secs(if deferred { 120 } else { hours * 3600 }));
             }
         });
     }
@@ -298,10 +321,19 @@ fn main() -> anyhow::Result<()> {
                     if let Some(res)=agent_presence(&dir2,None,None){
                         if let Some(cmd)=res["update_command_id"].as_u64().filter(|v|*v>0){
                             log(&dir2,&format!("Admin requested update id={cmd}"));
-                            let staged=check_for_update(&dir2,&exe2,&repo);
-                            let result=if staged {"staged"}else{"failed"};
-                            let _=agent_presence(&dir2,Some(cmd),Some(result));
-                            if staged {std::process::exit(0);}
+                            match check_for_update(&dir2,&exe2,&repo) {
+                                UpdateDecision::Ready => {
+                                    let _=agent_presence(&dir2,Some(cmd),Some("staged"));
+                                    std::process::exit(0);
+                                }
+                                UpdateDecision::NoChange => {
+                                    let _=agent_presence(&dir2,Some(cmd),Some("failed"));
+                                }
+                                UpdateDecision::Deferred => {
+                                    // Keep remote command pending; retry when Excel closes.
+                                    log(&dir2,"Admin update deferred; command left pending.");
+                                }
+                            }
                         }
                     }
                     busy2.store(false,Ordering::SeqCst);
@@ -341,7 +373,7 @@ fn main() -> anyhow::Result<()> {
                         if !std::path::Path::new(full_name).is_absolute() {
                             queue_busy.store(false,Ordering::SeqCst);
                             log(&queue_dir,"Invalid Ribbon workbook target; request dropped.");
-                            status::write(&queue_dir,"error","Workbook không hợp lệ; không sửa Excel.");
+                            status::write(&queue_dir,"error","指定されたExcelファイルが無効です。更新は実行されませんでした。");
                             continue;
                         }
                     }
@@ -349,7 +381,7 @@ fn main() -> anyhow::Result<()> {
                 } else {
                     queue_busy.store(false,Ordering::SeqCst);
                     log(&queue_dir,"Invalid Ribbon/Settings command ignored.");
-                    status::write(&queue_dir,"error","Lệnh không hợp lệ; không sửa Excel.");
+                    status::write(&queue_dir,"error","更新コマンドが無効です。ファイルは変更されていません。");
                 }
             }
             thread::sleep(Duration::from_secs(2));
