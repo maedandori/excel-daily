@@ -2,7 +2,8 @@
     [Parameter(Mandatory=$true)][string]$Settings,
     [Parameter(Mandatory=$true)][ValidateSet("day","night")][string]$Shift,
     [switch]$TimeOnly,
-    [ValidateRange(0,1)][int]$DateOffset=0
+    [ValidateRange(0,1)][int]$DateOffset=0,
+    [string]$WorkbookFullName=''
 )
 $ErrorActionPreference = "Stop"
 # PowerShell 5.1 otherwise writes stdout/stderr using the OEM code page,
@@ -42,7 +43,25 @@ function PaintColorCell($sheet,[string]$column,[int]$row,[string]$label){
  return $true
 }
 function NormalizeName([string]$name) { return $name.Trim().Replace([char]0x3000, ' ') }
-function PickWorkbook($excel, $config) {
+function PickWorkbook($excel, $config, [string]$requestedFullName='') {
+    if (-not [string]::IsNullOrWhiteSpace($requestedFullName)) {
+        if (-not [IO.Path]::IsPathRooted($requestedFullName)) {
+            throw 'Ribbon request requires an absolute saved workbook path.'
+        }
+        # This overrides the filename pattern ONLY for a Shape/Ribbon action.
+        # Never pick a different workbook if the clicked one is not open.
+        $found=@()
+        foreach($opened in $excel.Workbooks) {
+            if([string]::Equals([string]$opened.FullName,$requestedFullName,
+                    [StringComparison]::OrdinalIgnoreCase)) {
+                $found+= $opened
+            }
+        }
+        if($found.Count -ne 1) {
+            throw "Workbook được bấm không mở trong Excel instance này: $requestedFullName"
+        }
+        return $found[0]
+    }
     $pat = [string]$config.workbook.filename_pattern
     if (-not $pat) { $pat = '成形スケジュール*.xlsx' }
     $matches = @()
@@ -255,7 +274,7 @@ foreach ($e in $events) {
 }
 $excel = [Runtime.InteropServices.Marshal]::GetActiveObject("Excel.Application")
 if ($null -eq $excel) { throw "Excel chưa được mở." }
-$book = PickWorkbook $excel $cfg
+$book = PickWorkbook $excel $cfg $WorkbookFullName
 $sheetName = if ($Shift -eq "day") { [string]$cfg.sheets.day } else { [string]$cfg.sheets.night }
 $sheet = PickSheet $book $sheetName
 $start = if ($Shift -eq "day") { [int]$cfg.rows.day_start } else { [int]$cfg.rows.night_start }

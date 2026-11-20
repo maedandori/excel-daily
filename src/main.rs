@@ -98,7 +98,7 @@ fn confirm_tomorrow() -> bool {
     let title=wide("Excel Daily - Tomorrow / 翌日の予定");
     unsafe { MessageBoxW(std::ptr::null_mut(),msg.as_ptr(),title.as_ptr(),MB_YESNO|MB_ICONQUESTION)==IDYES }
 }
-fn call_excel(dir: PathBuf, action: &'static str, busy: Arc<AtomicBool>) {
+fn call_excel(dir: PathBuf, action: &'static str, busy: Arc<AtomicBool>, workbook_target: Option<String>) {
     if action=="tomorrow" && !confirm_tomorrow() {
         log(&dir,"Tomorrow import cancelled by operator.");
         busy.store(false,Ordering::SeqCst);
@@ -117,6 +117,9 @@ fn call_excel(dir: PathBuf, action: &'static str, busy: Arc<AtomicBool>) {
             .creation_flags(CREATE_NO_WINDOW).stdin(Stdio::null());
         if action == "refresh_times" { command.arg("-TimeOnly"); }
         if action == "tomorrow" { command.arg("-DateOffset").arg("1"); }
+        if let Some(ref full_name) = workbook_target {
+            command.arg("-WorkbookFullName").arg(full_name);
+        }
         match command.output() {
             Ok(o) => {
                 let out = String::from_utf8_lossy(&o.stdout);
@@ -311,9 +314,9 @@ fn main() -> anyhow::Result<()> {
         thread::spawn(move||loop {
             let p=queue_dir.join("excel-daily-command.json");
             if p.is_file() && !queue_busy.swap(true,Ordering::SeqCst) {
-                let action=fs::read_to_string(&p).ok().and_then(|s|serde_json::from_str::<serde_json::Value>(&s).ok());
+                let action_value=fs::read_to_string(&p).ok().and_then(|s|serde_json::from_str::<serde_json::Value>(&s).ok());
                 let _=fs::remove_file(&p);
-                let requested=action.as_ref().and_then(|v|v["action"].as_str());
+                let requested=action_value.as_ref().and_then(|v|v["action"].as_str());
                 let allowed=match requested {
                     Some("all")=>Some("all"),
                     Some("day")=>Some("day"),
@@ -324,7 +327,20 @@ fn main() -> anyhow::Result<()> {
                 };
                 if let Some(action)=allowed {
                     log(&queue_dir,&format!("Ribbon/Settings requested action={action}"));
-                    call_excel(queue_dir.clone(),action,queue_busy.clone());
+                    // A Shape carries its clicked workbook path, not a fixed
+                    // machine-specific XLL path. Never fall back to another
+                    // workbook when the target can't be found.
+                    let workbook_target=action_value.as_ref()
+                        .and_then(|v|v["workbook_full_name"].as_str())
+                        .map(str::to_owned);
+                    if let Some(ref full_name)=workbook_target {
+                        if !std::path::Path::new(full_name).is_absolute() {
+                            queue_busy.store(false,Ordering::SeqCst);
+                            log(&queue_dir,"Invalid Ribbon workbook target; request dropped.");
+                            continue;
+                        }
+                    }
+                    call_excel(queue_dir.clone(),action,queue_busy.clone(),workbook_target);
                 } else {
                     queue_busy.store(false,Ordering::SeqCst);
                     log(&queue_dir,"Invalid Ribbon/Settings command ignored.");
@@ -348,7 +364,7 @@ fn main() -> anyhow::Result<()> {
             if !busy.swap(true, Ordering::SeqCst) {
                 let dir2 = dir.clone();
                 let busy2 = busy.clone();
-                thread::spawn(move || call_excel(dir2, shift, busy2));
+                thread::spawn(move || call_excel(dir2, shift, busy2, None));
             } else {
                 log(&dir, "Ignored duplicate hotkey while update active.");
             }
