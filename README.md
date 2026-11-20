@@ -309,3 +309,43 @@ Excel is open. If the XLL is registered and still missing, use
 **ファイル > オプション > アドイン** to check Excel Add-ins and Disabled Items.
 An organizational security policy may block an XLL regardless of correct
 registration. The program does not disable Trust Center protections.
+
+## v0.3.6 — Buttons inside Excel worksheets (no VBA)
+
+The Ribbon has a new group **シート上のボタン** with:
+- **シートにボタン追加** — add two Shapes on the active worksheet, one for
+  **データ更新** (add/update schedule) and one for **時間更新** (update
+  outstanding times). Running it again repairs existing buttons without
+  creating duplicates. The Shapes are movable/resizable (and styled through
+  Excel's normal 図形の書式 tools).
+- **ボタンを再設定** — reassign callbacks to buttons copied from another
+  sheet or workbook without replacing their size, shape or appearance.
+
+All embedded buttons store only stable macro command names
+`ExcelDaily_Refresh` / `ExcelDaily_RefreshTimes`, exported by the
+**Excel-DNA XLL** (C#, **not VBA**). Shapes and their callbacks can be copied
+to another `.xlsx` file, but the target machine must have the Add-in
+installed, trusted and enabled; Office may block an unsigned or untrusted XLL.
+If copying Excel changes the macro assignment, use **ボタンを再設定**.
+
+Clicking a Shape identifies the exact **saved workbook being clicked** and
+passes its absolute `FullName` through the local command queue. The Agent
+only updates that workbook when it finds an exact match in the current
+Excel COM instance. It never silently falls back to the first open workbook
+or to `filename_pattern` for Shape/Ribbon actions. **Save the destination
+workbook first.** Its two day/night sheet names and entry columns must still
+match your Excel-daily settings. Ctrl+1–4 hotkeys retain their original
+pattern-based selection behavior.
+
+The new Ribbon refuses to send commands to Agent binaries older than v0.3.6
+to protect the workbook routing contract. Install the **complete v0.3.6 ZIP**,
+not just `excel-daily.exe`. Close Excel during upgrade so the `.xll`
+files can be replaced, then restart Excel to load the new Ribbon.
+
+The Windows CI build checks both packed 32-/64-bit XLLs, pure C# Shape
+identity/portability rules and the PowerShell target-workbook selection
+logic. **A real Excel 2019 interaction test is still needed on the work PC**:
+confirm two Shapes appear, are resizable, survive copy to another workbook,
+and only update the clicked file. The backend remains the authenticated
+Cloudflare Worker -> selected Turso/D1 MICS storage, never a direct
+database token in Excel.
