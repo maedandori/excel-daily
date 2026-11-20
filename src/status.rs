@@ -1,7 +1,7 @@
 use std::{fs, path::Path, time::{SystemTime, UNIX_EPOCH}};
 
 pub fn status_message(text: &str) -> String {
-    text.replace(['\r', '\n'], " ").chars().take(190).collect::<String>().trim().to_owned()
+    text.replace('\r', " ").replace('\n', " ").chars().take(190).collect::<String>().trim().to_owned()
 }
 
 pub fn write(dir: &Path, state: &str, message: &str) {
