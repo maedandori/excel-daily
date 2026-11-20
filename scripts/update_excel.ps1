@@ -118,6 +118,7 @@ function PickSheetExactly($book,[string]$name){
 }
 . (Join-Path $PSScriptRoot 'shift_date.ps1')
 function FetchEvents($cfg, [string]$baseDir, [string]$shift,[int]$dateOffset=0) {
+    $script:DryingEntries=@()
     $url = [string]$cfg.data_source.api_url
     if ($url) {
         $headers = @{}
@@ -143,6 +144,7 @@ function FetchEvents($cfg, [string]$baseDir, [string]$shift,[int]$dateOffset=0) 
             throw
         }
         if ($null -eq $response.events) { throw "API応答に予定データがありません。Excelは変更しません。" }
+        if ($null -ne $response.drying) { $script:DryingEntries=@($response.drying) }
         return @($response.events)
     }
     $path = [string]$cfg.data_source.events_file
@@ -151,6 +153,7 @@ function FetchEvents($cfg, [string]$baseDir, [string]$shift,[int]$dateOffset=0) 
     if (-not (Test-Path -LiteralPath $path)) { throw "予定データが見つかりません: 「$path」。Excelは変更しません。" }
     $json = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($null -eq $json.events) { throw "予定データにevents配列がありません。" }
+    if ($null -ne $json.drying) { $script:DryingEntries=@($json.drying) }
     return @($json.events)
 }
 # Repair only visibly corrupted color labels in rows already tracked by Excel Daily.
@@ -182,6 +185,7 @@ function EventTime($event) {
     catch { throw "時刻が正しくありません ($($event.id)): $t" }
 }
 . (Join-Path $PSScriptRoot 'color_cells.ps1')
+. (Join-Path $PSScriptRoot 'drying.ps1')
 # Recover rows if a workbook was already filled manually or the Agent state
 # was not available. Never overwrite ambiguous or previously tracked rows.
 function ExcelTimeText($sheet,[string]$column,[int]$row) {
@@ -432,6 +436,7 @@ foreach ($e in $ordered) {
     $state[$key] = @{row=$emptyRow; scheduled_at=[string]$e.scheduled_at}
     $added++
 }
+$dryingStats=UpdateDryingTable -sheet $sheet -cfg $cfg -book $book -state $state -now $now -timeOnly ([bool]$TimeOnly) -entries @($script:DryingEntries)
 # Save only our local row-ID state. The open Excel workbook remains unsaved.
 $json = ConvertTo-Json -InputObject $state -Depth 5
 [System.IO.File]::WriteAllText($metadataPath, $json, (New-Object System.Text.UTF8Encoding($false)))
@@ -439,7 +444,7 @@ if ($cfg.update_policy.save_automatically -eq $true) {
     $book.Save()
 }
 $elapsed=[int]([DateTime]::UtcNow-$started).TotalMilliseconds
-Write-Output "date_offset=$DateOffset; shift=$Shift; Workbook=$($book.Name); sheet=$($sheet.Name); added=$added; updated_times=$changed; colored_cells=$colored; preserved=$kept; elapsed_ms=$elapsed; excel_saved=$($cfg.update_policy.save_automatically)"
+Write-Output "date_offset=$DateOffset; shift=$Shift; Workbook=$($book.Name); sheet=$($sheet.Name); added=$added; updated_times=$changed; colored_cells=$colored; preserved=$kept; drying_added=$($dryingStats.added); drying_updated_times=$($dryingStats.updated); drying_preserved=$($dryingStats.preserved); elapsed_ms=$elapsed; excel_saved=$($cfg.update_policy.save_automatically)"
 } finally {
  if($eventsChanged){try{$excel.EnableEvents=$oldEvents}catch{}}
  if($screenChanged){try{$excel.ScreenUpdating=$oldScreen}catch{}}

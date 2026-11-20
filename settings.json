@@ -51,5 +51,22 @@
   "formatting": {
     "fast_excel_writes": true,
     "color_cells": true
+  },
+  "drying": {
+    "enabled": true,
+    "header": "乾燥原料必要",
+    "max_entries": 5,
+    "columns": {
+      "machine": "AY",
+      "production_start": "AZ",
+      "drying_time": "BA"
+    },
+    "time_by_material": {
+      "ABS": "",
+      "PS-TH21": "",
+      "PC": "",
+      "ナイロン": "",
+      "AS": ""
+    }
   }
 }

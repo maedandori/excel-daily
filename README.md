@@ -433,3 +433,20 @@ Rust/C#ビルドと日本語メッセージを検証します。
 - Excel 2019では、アドインおよびAgentを同じ v0.3.9 に更新し、
   Excelを再起動してください。旧XLLとの混在を検出した場合、
   誤更新防止のため書き込みを拒否します。
+
+## Drying-required materials (乾燥原料必要)
+
+The existing authenticated Excel Daily request also returns a drying array built
+from MICS material_names / material_details (PARTS–RESIN). Only ABS, PS-TH21,
+PC, ナイロン/NYLON and AS are selected, even when no mold/color change occurs.
+No additional Excel API requests are needed. The Excel table is located by its
+乾燥原料必要 heading and verified against the 号機 / 量産開始 / 乾燥時間 labels in AY–BA.
+The five data rows are found dynamically to respect merged cells. Future entries
+can refresh production start times; past and manually entered rows are preserved.
+Ctrl+3 refreshes tracked times only, and a ribbon/sheet button targets its own sheet.
+
+Actual drying durations depend on material grade and factory rules. New entries
+therefore show 要確認 until approved values are placed under drying.time_by_material
+in local settings.json. Missing or conflicting resin rules also show 要確認; manually
+edited durations are never overwritten. Older settings.json files use safe defaults.
+The Machine-Control worker and MICS schedule material snapshots must be updated.
