@@ -30,7 +30,7 @@ namespace ExcelDailyRibbon
                   </group>
                   <group id='sheetButtons' label='シート上のボタン'>
                     <button id='installButtons' label='シートにボタン追加'
-                      imageMso='InsertShapes' onAction='OnUpdate'/>
+                      onAction='OnUpdate'/>
                     <button id='repairButtons' label='ボタンを再設定'
                       imageMso='RefreshAll' onAction='OnUpdate'/>
                   </group>
@@ -124,7 +124,7 @@ namespace ExcelDailyRibbon
             // might update another open file. Never silently use that old agent.
             string version = FileVersionInfo.GetVersionInfo(agent).FileVersion;
             Version parsed;
-            if (!Version.TryParse(version, out parsed) || parsed < new Version(0, 3, 6))
+            if (!Version.TryParse(version, out parsed) || parsed.CompareTo(new Version(0, 3, 6)) < 0)
                 throw new InvalidOperationException("Excel Daily Agent phải là v0.3.6 trở lên.");
 
             workbookFullName = SheetButtonContract.RequireSavedWorkbook(workbookFullName);
