@@ -170,7 +170,8 @@ function ExcelTimeText($sheet,[string]$column,[int]$row) {
     return ''
 }
 function MachineId([string]$value) {
-    return ($value.Trim() -replace '[^0-9]','').TrimStart('0')
+    $digits=($value.Trim() -replace '[^0-9]','')
+    return ($digits -replace '^0+','')
 }
 function TimeStillPending([string]$existing,[datetime]$scheduled,[datetime]$now) {
     try {
