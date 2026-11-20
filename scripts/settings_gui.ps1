@@ -142,18 +142,18 @@ try {
  }
  ButtonAt '設定を保存' 20 542 150 {
   try{SaveSettings;$script:Status.Text='設定を保存しました。再起動すると適用されます。'}
-  catch{$script:Status.Text='エラー: '+$_.Exception.Message;WriteSettingsLog 'GUI_ERROR' $_.Exception.Message}
+  catch{$script:Status.Text='処理に失敗しました。詳細は設定ログをご確認ください。';WriteSettingsLog 'GUI_ERROR' $_.Exception.Message}
  }
  ButtonAt '再起動' 186 542 150 {
   try {
    SaveSettings;StopOwnAgent;Start-Sleep -Milliseconds 700
    Start-Process -FilePath (Join-Path $dir 'excel-daily.exe') -WorkingDirectory $dir
    $script:Status.Text='エージェントを再起動しました。'
-  }catch{[System.Windows.Forms.MessageBox]::Show($_.Exception.Message,'Excel Daily Settings')|Out-Null}
+  }catch{$script:Status.Text='処理に失敗しました。設定ログを確認してください。';WriteSettingsLog 'GUI_ERROR' $_.Exception.Message}
  }
  ButtonAt '停止' 352 542 150 {
   try{StopOwnAgent;$script:Status.Text='エージェントを停止しました。'}
-  catch{$script:Status.Text='エラー: '+$_.Exception.Message;WriteSettingsLog 'STOP_FAILED' $_.Exception.Message}
+  catch{$script:Status.Text='処理に失敗しました。詳細は設定ログをご確認ください。';WriteSettingsLog 'STOP_FAILED' $_.Exception.Message}
  }
  ButtonAt '閉じる' 518 542 160 {$script:ShutdownReason='close-button';$form.Close()}
  ButtonAt '翌日の予定を取り込む' 20 594 310 {
@@ -169,7 +169,7 @@ try {
    if(Test-Path $commandPath){throw '前の更新処理が完了していません。'}
    [IO.File]::WriteAllText($commandPath,'{"action":"tomorrow"}',([Text.UTF8Encoding]::new($false)))
    $script:Status.Text='翌日の予定更新を受け付けました。進行状況はExcel下部に表示されます。'
-  }catch{[System.Windows.Forms.MessageBox]::Show($_.Exception.Message,'Excel Daily Settings')|Out-Null}
+  }catch{$script:Status.Text='処理に失敗しました。設定ログを確認してください。';WriteSettingsLog 'GUI_ERROR' $_.Exception.Message}
  }
  ButtonAt 'GitHub更新を確認' 346 594 332 {
   try{
@@ -189,7 +189,7 @@ try {
   }catch{
    $script:UpdateRequestActive=$false
    WriteSettingsLog 'UPDATE_START_FAILED' $_.Exception.Message
-   [System.Windows.Forms.MessageBox]::Show($_.Exception.Message,'Excel Daily Settings')|Out-Null
+   $script:Status.Text='処理に失敗しました。設定ログを確認してください。';WriteSettingsLog 'GUI_ERROR' $_.Exception.Message
  }
  }
  $timer=[System.Windows.Forms.Timer]::new();$timer.Interval=1000
@@ -242,7 +242,7 @@ try {
  $details="起動エラー: "+$_.Exception.Message+" (line "+$_.InvocationInfo.ScriptLineNumber+")"
  WriteSettingsLog 'SCRIPT_EXCEPTION' $details
  try{Add-Content -LiteralPath $log -Value ("$(Get-Date -Format o) "+$details) -Encoding UTF8}catch{}
- try{[System.Windows.Forms.MessageBox]::Show($details+' 詳細はexcel-daily-settings.logを確認してください。','Excel Daily 設定エラー')|Out-Null}catch{}
+ try{WriteSettingsLog 'STARTUP_NOTIFICATION' '起動に失敗しました。詳細は設定ログを確認してください。'}catch{}
  Write-Error $details
  exit 1
 }
