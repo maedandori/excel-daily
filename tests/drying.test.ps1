@@ -2,7 +2,7 @@ $ErrorActionPreference='Stop'
 $source=Join-Path $PSScriptRoot '..\scripts\drying.ps1'
 $tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile((Resolve-Path $source).Path,[ref]$tokens,[ref]$errors)
-if($errors.Count){throw ($errors|Out-String)}
+if($errors.Count){foreach($parseError in $errors){Write-Output ('PARSER_ERROR: '+$parseError.Message+' TEXT='+$parseError.Extent.Text+' LINE='+$parseError.Extent.StartLineNumber)};throw 'Drying script parsing failed on Windows PowerShell 5.1'}
 $fn=$ast.Find({param($x) $x -is [Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq 'DryingTimeFromConfig'},$true)
 if(!$fn){throw 'Missing DryingTimeFromConfig'}
 Invoke-Expression $fn.Extent.Text
