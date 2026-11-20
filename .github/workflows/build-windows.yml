@@ -9,6 +9,7 @@ on:
       - 'src/**'
       - 'scripts/**'
       - 'ribbon/**'
+      - 'tests/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'build.rs'
@@ -45,6 +46,9 @@ jobs:
         run: |
           $result = powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/install-ribbon.ps1 -Diagnose
           if ($LASTEXITCODE -ne 0 -or (($result -join "`n") -notmatch 'Ribbon diagnostics')) { throw 'Ribbon diagnostic command failed' }
+      - name: Test exact clicked workbook targeting
+        shell: powershell
+        run: .\tests\target-workbook.test.ps1
       - name: Test 10 minute rounding in Windows PowerShell
         shell: powershell
         run: .\\tests\\round-time.test.ps1
@@ -75,6 +79,13 @@ jobs:
           if ($x86.Count -ne 1 -or $x64.Count -ne 1) {
             throw "Expected one packed Ribbon XLL per Excel bitness, found x86=$($x86.Count) x64=$($x64.Count)"
           }
+      - name: Test workbook Shape contracts without installed Excel
+        shell: pwsh
+        run: |
+          dotnet build tests/ribbon-contract-tests/RibbonContractTests.csproj --configuration Release
+          if ($LASTEXITCODE -ne 0) { throw 'Ribbon contract build failed' }
+          & tests/ribbon-contract-tests/bin/Release/net48/RibbonContractTests.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Ribbon contract tests failed' }
       - name: Package
         shell: pwsh
         run: |
