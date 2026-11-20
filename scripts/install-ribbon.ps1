@@ -4,6 +4,8 @@
     [switch]$Diagnose
 )
 $ErrorActionPreference='Stop'
+[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false)
+$OutputEncoding=[Console]::OutputEncoding
 $dir=Split-Path -Parent $MyInvocation.MyCommand.Path
 # Office 2019 is version 16.0 (also used by Microsoft 365).
 $key='HKCU:\Software\Microsoft\Office\16.0\Excel\Options'
@@ -25,6 +27,7 @@ function ReadArchitecture {
 }
 
 if($Diagnose){
+    Write-Output 'RIBBON_DIAGNOSTICS_OK'
     Write-Output 'Excel Daily リボンの診断（読み取り専用）'
     Write-Output ('インストール先: '+$dir)
     foreach($name in @('excel-daily.exe','settings.json','ExcelDailyRibbon.xll','ExcelDailyRibbon64.xll')){
