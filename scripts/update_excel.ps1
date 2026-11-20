@@ -1,9 +1,10 @@
 ﻿param(
     [Parameter(Mandatory=$true)][string]$Settings,
-    [Parameter(Mandatory=$true)][ValidateSet("day","night")][string]$Shift,
+    [Parameter(Mandatory=$true)][ValidateSet("day","night","auto")][string]$Shift,
     [switch]$TimeOnly,
     [ValidateRange(0,1)][int]$DateOffset=0,
-    [string]$WorkbookFullName=''
+    [string]$WorkbookFullName='',
+    [string]$WorksheetName=''
 )
 $ErrorActionPreference = "Stop"
 # PowerShell 5.1 otherwise writes stdout/stderr using the OEM code page,
@@ -91,6 +92,29 @@ function PickSheet($book, [string]$wanted) {
     }
     if ($found.Count -eq 1) { return $found[0] }
     throw "シート「$wanted」が見つかりません。settings.jsonのシート名を確認してください。"
+}
+# A clicked Shape/Ribbon command is scoped to the currently selected
+# sheet, even if the workbook contains many shifts. Detect which source
+# schedule to read from the exact configured name or a clear shift marker.
+# Do not guess for unrelated or ambiguous sheet names.
+function ResolveShiftForSheet($cfg,[string]$name){
+    if([string]::IsNullOrWhiteSpace($name)){throw '更新するシート名を指定してください。'}
+    $normalized=NormalizeName $name
+    $day=NormalizeName ([string]$cfg.sheets.day)
+    $night=NormalizeName ([string]$cfg.sheets.night)
+    if($normalized -eq $day -and $normalized -ne $night){return 'day'}
+    if($normalized -eq $night -and $normalized -ne $day){return 'night'}
+    $isDay=($normalized -match '昼勤|日勤')
+    $isNight=($normalized -match '夜勤')
+    if($isDay -and -not $isNight){return 'day'}
+    if($isNight -and -not $isDay){return 'night'}
+    throw "シート「$name」の勤務区分（昼勤・夜勤）を判定できません。名前に昼勤または夜勤を含めるか、設定のシート名を確認してください。"
+}
+function PickSheetExactly($book,[string]$name){
+    foreach($sheet in $book.Worksheets){
+        if($sheet.Name -ceq $name){return $sheet}
+    }
+    throw "指定されたシート「$name」が対象ブックに見つかりません。更新は実行されませんでした。"
 }
 . (Join-Path $PSScriptRoot 'shift_date.ps1')
 function FetchEvents($cfg, [string]$baseDir, [string]$shift,[int]$dateOffset=0) {
@@ -243,6 +267,17 @@ function FindExistingSlot($sheet,$cfg,$event,$state,$book,[int]$start,[int]$step
     return 0
 }
 $cfg = Get-Content -LiteralPath $Settings -Raw -Encoding UTF8 | ConvertFrom-Json
+if(-not [string]::IsNullOrWhiteSpace($WorksheetName)){
+    if([string]::IsNullOrWhiteSpace($WorkbookFullName)){
+        throw 'シートを指定する場合は更新対象のExcelファイルも指定してください。'
+    }
+    if($Shift -ne 'auto'){
+        throw 'シートを指定する場合はShift=autoを使用してください。'
+    }
+    $Shift=ResolveShiftForSheet $cfg $WorksheetName
+}elseif($Shift -eq 'auto'){
+    throw '更新するシートが指定されていません。'
+}
 $script:ColorCellsEnabled=($null -eq $cfg.formatting -or $cfg.formatting.color_cells -ne $false)
 $fastWrites=($null -eq $cfg.formatting -or $cfg.formatting.fast_excel_writes -ne $false)
 $baseDir = Split-Path -Parent $Settings
@@ -263,8 +298,14 @@ foreach ($e in $events) {
 $excel = [Runtime.InteropServices.Marshal]::GetActiveObject("Excel.Application")
 if ($null -eq $excel) { throw "Excelが起動していません。" }
 $book = PickWorkbook $excel $cfg $WorkbookFullName
-$sheetName = if ($Shift -eq "day") { [string]$cfg.sheets.day } else { [string]$cfg.sheets.night }
-$sheet = PickSheet $book $sheetName
+$sheetName = if (-not [string]::IsNullOrWhiteSpace($WorksheetName)) {
+    $WorksheetName
+} elseif ($Shift -eq "day") { [string]$cfg.sheets.day } else { [string]$cfg.sheets.night }
+$sheet = if (-not [string]::IsNullOrWhiteSpace($WorksheetName)) {
+    PickSheetExactly $book $sheetName
+} else {
+    PickSheet $book $sheetName
+}
 $start = if ($Shift -eq "day") { [int]$cfg.rows.day_start } else { [int]$cfg.rows.night_start }
 $step = [int]$cfg.rows.step
 $count = [int]$cfg.rows.max_entries
@@ -398,7 +439,7 @@ if ($cfg.update_policy.save_automatically -eq $true) {
     $book.Save()
 }
 $elapsed=[int]([DateTime]::UtcNow-$started).TotalMilliseconds
-Write-Output "date_offset=$DateOffset; Workbook=$($book.Name); sheet=$($sheet.Name); added=$added; updated_times=$changed; colored_cells=$colored; preserved=$kept; elapsed_ms=$elapsed; excel_saved=$($cfg.update_policy.save_automatically)"
+Write-Output "date_offset=$DateOffset; shift=$Shift; Workbook=$($book.Name); sheet=$($sheet.Name); added=$added; updated_times=$changed; colored_cells=$colored; preserved=$kept; elapsed_ms=$elapsed; excel_saved=$($cfg.update_policy.save_automatically)"
 } finally {
  if($eventsChanged){try{$excel.EnableEvents=$oldEvents}catch{}}
  if($screenChanged){try{$excel.ScreenUpdating=$oldScreen}catch{}}

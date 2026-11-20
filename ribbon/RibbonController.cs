@@ -57,11 +57,17 @@ namespace ExcelDailyRibbon
                         SheetButtons.InstallOrRepair(true);
                         return;
                     case "refreshData":
-                        QueueAction("all", ActiveWorkbookPath());
+                    {
+                        var target = ActiveSheetTarget();
+                        QueueAction("all", target.Item1, target.Item2);
                         return;
+                    }
                     case "refreshTime":
-                        QueueAction("refresh_times", ActiveWorkbookPath());
+                    {
+                        var target = ActiveSheetTarget();
+                        QueueAction("refresh_times", target.Item1, target.Item2);
                         return;
+                    }
                     case "tomorrow":
                         QueueAction("tomorrow", ActiveWorkbookPath());
                         return;
@@ -79,7 +85,10 @@ namespace ExcelDailyRibbon
         public static void RefreshClickedSheet()
         {
             if (!StatusUi.Guard()) return;
-            try { QueueAction("all", ClickedShapeWorkbookPath("data")); }
+            try {
+                var target = ClickedShapeTarget("data");
+                QueueAction("all", target.Item1, target.Item2);
+            }
             catch (Exception ex) { DisplayError(ex); }
         }
 
@@ -87,7 +96,10 @@ namespace ExcelDailyRibbon
         public static void RefreshClickedTimes()
         {
             if (!StatusUi.Guard()) return;
-            try { QueueAction("refresh_times", ClickedShapeWorkbookPath("time")); }
+            try {
+                var target = ClickedShapeTarget("time");
+                QueueAction("refresh_times", target.Item1, target.Item2);
+            }
             catch (Exception ex) { DisplayError(ex); }
         }
 
@@ -99,7 +111,20 @@ namespace ExcelDailyRibbon
             return SheetButtonContract.RequireSavedWorkbook(Convert.ToString(book.FullName));
         }
 
-        private static string ClickedShapeWorkbookPath(string kind)
+        private static Tuple<string, string> ActiveSheetTarget()
+        {
+            dynamic app = ExcelDnaUtil.Application;
+            dynamic sheet = app.ActiveSheet;
+            if (sheet == null)
+                throw new InvalidOperationException("更新するシートを選択してください。");
+            string name = Convert.ToString(sheet.Name);
+            if (String.IsNullOrWhiteSpace(name))
+                throw new InvalidOperationException("シート名が取得できません。");
+            string path = SheetButtonContract.RequireSavedWorkbook(Convert.ToString(sheet.Parent.FullName));
+            return Tuple.Create(path, name);
+        }
+
+        private static Tuple<string, string> ClickedShapeTarget(string kind)
         {
             dynamic app = ExcelDnaUtil.Application;
             object caller = app.Caller;
@@ -116,10 +141,11 @@ namespace ExcelDailyRibbon
             if (!SheetButtonContract.IsKind(
                 Convert.ToString(shape.Name), Convert.ToString(shape.AlternativeText), kind))
                 throw new InvalidOperationException("ボタンの種類が一致しません。「ボタンを再設定」を実行してください。");
-            return SheetButtonContract.RequireSavedWorkbook(Convert.ToString(sheet.Parent.FullName));
+            string path = SheetButtonContract.RequireSavedWorkbook(Convert.ToString(sheet.Parent.FullName));
+            return Tuple.Create(path, Convert.ToString(sheet.Name));
         }
 
-        internal static void QueueAction(string action, string workbookFullName)
+        internal static void QueueAction(string action, string workbookFullName, string worksheetName = null)
         {
             if (!StatusUi.Guard()) return;
             string dir = Path.GetDirectoryName(ExcelDnaUtil.XllPath);
@@ -128,12 +154,12 @@ namespace ExcelDailyRibbon
             string agent = Path.Combine(dir, "excel-daily.exe");
             if (!File.Exists(agent) || !File.Exists(Path.Combine(dir, "settings.json")))
                 throw new FileNotFoundException("Excel Daily本体またはsettings.jsonがありません。ZIP版をすべて展開してください。");
-            // Fail closed: the 0.3.5 agent would ignore the workbook target and
-            // might update another open file. Never silently use that old agent.
+            // Older Agents might ignore the worksheet target and modify both
+            // shifts. Reject mixed Agent/Add-in versions instead of guessing.
             string version = FileVersionInfo.GetVersionInfo(agent).FileVersion;
             Version parsed;
-            if (!Version.TryParse(version, out parsed) || parsed.CompareTo(new Version(0, 3, 6)) < 0)
-                throw new InvalidOperationException("Excel Daily本体はv0.3.6以降が必要です。");
+            if (!Version.TryParse(version, out parsed) || parsed.CompareTo(new Version(0, 3, 9)) < 0)
+                throw new InvalidOperationException("Excel Daily本体はv0.3.9以降が必要です。");
 
             workbookFullName = SheetButtonContract.RequireSavedWorkbook(workbookFullName);
             string queue = Path.Combine(dir, "excel-daily-command.json");
@@ -142,10 +168,17 @@ namespace ExcelDailyRibbon
 
             // Use the JSON serializer to preserve Japanese / UNC paths and
             // avoid hand-built strings. The queue file is published atomically.
-            var json = new JavaScriptSerializer().Serialize(new Dictionary<string, string>
+            var command = new Dictionary<string, string>
             {
                 { "action", action }, { "workbook_full_name", workbookFullName }
-            });
+            };
+            if (!String.IsNullOrWhiteSpace(worksheetName))
+            {
+                if (worksheetName.Length > 31)
+                    throw new InvalidOperationException("シート名が無効です。");
+                command.Add("sheet_name", worksheetName);
+            }
+            var json = new JavaScriptSerializer().Serialize(command);
             string temp = Path.Combine(dir, "excel-daily-command-" +
                 Guid.NewGuid().ToString("N") + ".tmp");
             try

@@ -84,13 +84,17 @@ fn set_autostart(enabled: bool, exe: &Path) -> anyhow::Result<()> {
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 // Operation commands never block Excel with Windows message boxes. The
 // XLL reads progress, success and errors from excel-daily-status.json.
-fn call_excel(dir: PathBuf, action: &'static str, busy: Arc<AtomicBool>, workbook_target: Option<String>) {
+fn call_excel(dir: PathBuf, action: &'static str, busy: Arc<AtomicBool>, workbook_target: Option<String>, sheet_target: Option<String>) {
     let script = dir.join("update_excel.ps1");
     let config = dir.join("settings.json");
     let busy_file = dir.join("excel-daily-busy.lock");
     let _ = fs::write(&busy_file, std::process::id().to_string());
     status::write(&dir, "running", "更新中：生産予定を取得し、Excelに反映しています。");
-    let shifts: &[&str] = if matches!(action, "all" | "refresh_times" | "tomorrow") {
+    // Ribbon/Shape commands are scoped to ONE clicked worksheet.
+    // Legacy Ctrl+1/2/3/4 hotkeys retain their original shift behavior.
+    let shifts: &[&str] = if sheet_target.is_some() {
+        &["auto"]
+    } else if matches!(action, "all" | "refresh_times" | "tomorrow") {
         &["day", "night"]
     } else { &[action] };
     let mut failures: Vec<String> = Vec::new();
@@ -98,7 +102,7 @@ fn call_excel(dir: PathBuf, action: &'static str, busy: Arc<AtomicBool>, workboo
     for (index, shift) in shifts.iter().enumerate() {
         status::write(&dir, "running", &format!(
             "更新中：{}/{}（{}）", index + 1, shifts.len(),
-            if *shift == "day" { "昼勤" } else { "夜勤" }));
+            if *shift == "auto" { "選択中のシート" } else if *shift == "day" { "昼勤" } else { "夜勤" }));
         let mut command = Command::new("powershell.exe");
         command.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
             "-ExecutionPolicy", "Bypass", "-File"])
@@ -108,6 +112,9 @@ fn call_excel(dir: PathBuf, action: &'static str, busy: Arc<AtomicBool>, workboo
         if action == "tomorrow" { command.arg("-DateOffset").arg("1"); }
         if let Some(ref full_name) = workbook_target {
             command.arg("-WorkbookFullName").arg(full_name);
+        }
+        if let Some(ref sheet_name) = sheet_target {
+            command.arg("-WorksheetName").arg(sheet_name);
         }
         match command.output() {
             Ok(o) => {
@@ -125,12 +132,14 @@ fn call_excel(dir: PathBuf, action: &'static str, busy: Arc<AtomicBool>, workboo
                                 .map(str::to_owned)
                         }).unwrap_or_else(|| "0".to_owned())
                     };
-                    let label = if *shift == "day" { "昼勤" } else { "夜勤" };
+                    let label = if *shift == "auto" {
+                        sheet_target.as_deref().unwrap_or("選択中のシート")
+                    } else if *shift == "day" { "昼勤" } else { "夜勤" };
                     results.push(format!("{label}：新規{}件・時刻変更{}件・保持{}件",
                         count("added="), count("updated_times="), count("preserved=")));
                 } else {
                     failures.push(format!("{}の更新に失敗しました",
-                        if *shift == "day" { "昼勤" } else { "夜勤" }));
+                        if *shift == "auto" { "選択中のシート" } else if *shift == "day" { "昼勤" } else { "夜勤" }));
                 }
             }
             Err(e) => {
@@ -369,6 +378,9 @@ fn main() -> anyhow::Result<()> {
                     let workbook_target=action_value.as_ref()
                         .and_then(|v|v["workbook_full_name"].as_str())
                         .map(str::to_owned);
+                    let sheet_target=action_value.as_ref()
+                        .and_then(|v|v["sheet_name"].as_str())
+                        .map(str::to_owned);
                     if let Some(ref full_name)=workbook_target {
                         if !std::path::Path::new(full_name).is_absolute() {
                             queue_busy.store(false,Ordering::SeqCst);
@@ -377,7 +389,19 @@ fn main() -> anyhow::Result<()> {
                             continue;
                         }
                     }
-                    call_excel(queue_dir.clone(),action,queue_busy.clone(),workbook_target);
+                    // Old XLLs may send a workbook with no sheet. Never
+                    // silently fall back to both sheets after an upgrade.
+                    if (sheet_target.is_some() && workbook_target.is_none()) ||
+                        (workbook_target.is_some() &&
+                         matches!(action,"all"|"refresh_times") && sheet_target.is_none()) ||
+                        sheet_target.as_ref().is_some_and(|name|
+                            name.is_empty() || name.encode_utf16().count()>31) {
+                        queue_busy.store(false,Ordering::SeqCst);
+                        log(&queue_dir,"Workbook/sheet routing missing or invalid; request rejected.");
+                        status::write(&queue_dir,"error","シートの指定が無効です。Excelを再起動してから再実行してください。");
+                        continue;
+                    }
+                    call_excel(queue_dir.clone(),action,queue_busy.clone(),workbook_target,sheet_target);
                 } else {
                     queue_busy.store(false,Ordering::SeqCst);
                     log(&queue_dir,"Invalid Ribbon/Settings command ignored.");
@@ -402,7 +426,7 @@ fn main() -> anyhow::Result<()> {
             if !busy.swap(true, Ordering::SeqCst) {
                 let dir2 = dir.clone();
                 let busy2 = busy.clone();
-                thread::spawn(move || call_excel(dir2, shift, busy2, None));
+                thread::spawn(move || call_excel(dir2, shift, busy2, None, None));
             } else {
                 log(&dir, "Ignored duplicate hotkey while update active.");
             }

@@ -49,6 +49,9 @@ jobs:
       - name: Test no modal messages and busy/StatusBar lifecycle
         shell: powershell
         run: .\tests\status-feedback.test.ps1
+      - name: Test active worksheet only and shift auto detection
+        shell: powershell
+        run: .\tests\active-sheet.test.ps1
       - name: Test exact clicked workbook targeting
         shell: powershell
         run: .\tests\target-workbook.test.ps1
