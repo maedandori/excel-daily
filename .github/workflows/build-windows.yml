@@ -46,6 +46,9 @@ jobs:
         run: |
           $result = powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/install-ribbon.ps1 -Diagnose
           if ($LASTEXITCODE -ne 0 -or (($result -join "`n") -notmatch 'Ribbon diagnostics')) { throw 'Ribbon diagnostic command failed' }
+      - name: Test no modal messages and busy/StatusBar lifecycle
+        shell: powershell
+        run: .\tests\status-feedback.test.ps1
       - name: Test exact clicked workbook targeting
         shell: powershell
         run: .\tests\target-workbook.test.ps1
