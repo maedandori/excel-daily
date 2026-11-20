@@ -44,7 +44,7 @@ jobs:
         shell: powershell
         run: |
           $result = powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/install-ribbon.ps1 -Diagnose
-          if ($LASTEXITCODE -ne 0 -or ($result -notmatch 'Ribbon diagnostics')) { throw 'Ribbon diagnostic command failed' }
+          if ($LASTEXITCODE -ne 0 -or (($result -join "`n") -notmatch 'Ribbon diagnostics')) { throw 'Ribbon diagnostic command failed' }
       - name: Test 10 minute rounding in Windows PowerShell
         shell: powershell
         run: .\\tests\\round-time.test.ps1
