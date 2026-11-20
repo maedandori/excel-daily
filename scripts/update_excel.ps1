@@ -151,6 +151,90 @@ function EventTime($event) {
     catch { throw "Giờ không hợp lệ ($($event.id)): $t" }
 }
 . (Join-Path $PSScriptRoot 'color_cells.ps1')
+# Recover rows if a workbook was already filled manually or the Agent state
+# was not available. Never overwrite ambiguous or previously tracked rows.
+function ExcelTimeText($sheet,[string]$column,[int]$row) {
+    $value=(ExcelCell $sheet $column $row).Value2
+    if ($null -eq $value) { return '' }
+    if ($value -is [double] -or $value -is [decimal]) {
+        $number=[double]$value
+        if ($number -ge 0 -and $number -lt 1) {
+            $minutes=[int][Math]::Round($number*1440)
+            return ('{0:00}:{1:00}' -f ([int][Math]::Floor($minutes/60)%24),($minutes%60))
+        }
+    }
+    $raw=[string]$value
+    if ($raw -match '^\s*(\d{1,2}):(\d{2})') {
+        return ('{0:00}:{1:00}' -f [int]$matches[1],[int]$matches[2])
+    }
+    return ''
+}
+function MachineId([string]$value) {
+    $digits=($value.Trim() -replace '[^0-9]','')
+    return ($digits -replace '^0+','')
+}
+function TimeStillPending([string]$existing,[datetime]$scheduled,[datetime]$now) {
+    try {
+        $parsed=[TimeSpan]::Parse($existing,[Globalization.CultureInfo]::InvariantCulture)
+        $candidate=$scheduled.Date.Add($parsed)
+        if (($candidate-$scheduled).TotalHours -gt 12) { $candidate=$candidate.AddDays(-1) }
+        if (($candidate-$scheduled).TotalHours -lt -12) { $candidate=$candidate.AddDays(1) }
+        return $candidate -gt $now
+    } catch { return $false }
+}
+function FindExistingSlot($sheet,$cfg,$event,$state,$book,[int]$start,[int]$step,[int]$count,
+                          [object[]]$ordered,[datetime]$now,[datetime]$scheduled,[bool]$carryover) {
+    $kind=[string]$event.kind
+    $machine=[string]$event.machine
+    $machineCol=if($kind -eq 'mold'){[string]$cfg.columns.mold_machine}else{[string]$cfg.columns.color_machine}
+    $timeCol=if($kind -eq 'mold'){[string]$cfg.columns.mold_time}else{[string]$cfg.columns.color_time}
+    $targetTime=EventTime $event
+    $prefix="$($book.FullName)|$($sheet.Name)|$kind|"
+    $occupied=@{}
+    foreach($entry in $state.GetEnumerator()) {
+        if(([string]$entry.Key).StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase) -and $entry.Value.row) {
+            $occupied[[int]$entry.Value.row]=$true
+        }
+    }
+    $candidates=@()
+    for($i=0;$i -lt $count;$i++) {
+        $row=$start+$i*$step
+        if($occupied.ContainsKey($row)) { continue }
+        if((MachineId (CellValue $sheet $machineCol $row)) -ne (MachineId $machine)){continue}
+        $time=ExcelTimeText $sheet $timeCol $row
+        if(-not $time){continue}
+        $colorMatched=$false
+        if($kind -eq 'color') {
+            $old=[string]$event.color_before
+            $new=[string]$event.color_after
+            $actualOld=CellValue $sheet ([string]$cfg.columns.color_before) $row
+            $actualNew=CellValue $sheet ([string]$cfg.columns.color_after) $row
+            if($old -and $new -and $actualOld -and $actualNew) {
+                $colorMatched=($actualOld.Trim() -eq $old.Trim() -and $actualNew.Trim() -eq $new.Trim())
+                if(-not $colorMatched){continue}
+            }
+        }
+        $candidates+=@{row=$row;time=$time;colorMatched=$colorMatched}
+    }
+    if($candidates.Count -eq 0){return 0}
+    $exact=@($candidates|Where-Object{$_.time -eq $targetTime})
+    if($exact.Count -eq 1){return [int]$exact[0].row}
+    if($exact.Count -gt 1){return -1}
+    $sameColors=@($candidates|Where-Object{$_.colorMatched})
+    if($sameColors.Count -eq 1 -and ($carryover -or (TimeStillPending $sameColors[0].time $scheduled $now))) {
+        return [int]$sameColors[0].row
+    }
+    if($sameColors.Count -gt 1){return -1}
+    $incoming=@($ordered|Where-Object{
+        [string]$_.kind -eq $kind -and (MachineId ([string]$_.machine)) -eq (MachineId $machine)
+    })
+    if($candidates.Count -eq 1 -and $incoming.Count -eq 1 -and
+       ($carryover -or (TimeStillPending $candidates[0].time $scheduled $now))) {
+        return [int]$candidates[0].row
+    }
+    if($candidates.Count -gt 1){return -1}
+    return 0
+}
 $cfg = Get-Content -LiteralPath $Settings -Raw -Encoding UTF8 | ConvertFrom-Json
 $script:ColorCellsEnabled=($null -eq $cfg.formatting -or $cfg.formatting.color_cells -ne $false)
 $fastWrites=($null -eq $cfg.formatting -or $cfg.formatting.fast_excel_writes -ne $false)
@@ -246,6 +330,27 @@ foreach ($e in $ordered) {
         $state.Remove($key)
     }
     if ($TimeOnly) { $kept++; continue }
+    # If this same machine/change is already in the Excel sheet, only refresh
+    # the time cell. Don't create a duplicate when the local ID mapping was lost.
+    $adopt=FindExistingSlot $sheet $cfg $e $state $book $start $step $count $ordered $now $when $carryover
+    if($adopt -lt 0) {
+        Write-Output "Ambiguous Excel rows: $kind / machine $machine / event $id; unchanged."
+        $kept++
+        continue
+    }
+    if($adopt -gt 0) {
+        if(-not $past) {
+            $newTime=EventTime $e
+            if((ExcelTimeText $sheet $timeCol $adopt) -ne $newTime) {
+                PutValue $sheet $timeCol $adopt $newTime
+                $changed++
+            }
+            if($kind -eq 'color'){RepairColorIfBroken $sheet $cfg $e $adopt}
+        }
+        $state[$key]=@{row=$adopt;scheduled_at=[string]$e.scheduled_at}
+        $kept++
+        continue
+    }
     # Never append historical/completed work, except an explicitly active
     # handover item with status 100/410/440/490 targeting this shift.
     if ($past) { $kept++; continue }

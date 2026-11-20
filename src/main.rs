@@ -108,7 +108,7 @@ fn call_excel(dir: PathBuf, action: &'static str, busy: Arc<AtomicBool>) {
     let config = dir.join("settings.json");
     let busy_file=dir.join("excel-daily-busy.lock");
     let _=fs::write(&busy_file,std::process::id().to_string());
-    let shifts: &[&str] = if action == "refresh_times" || action=="tomorrow" { &["day", "night"] } else { &[action] };
+    let shifts: &[&str] = if matches!(action, "all" | "refresh_times" | "tomorrow") { &["day", "night"] } else { &[action] };
     let mut failures = Vec::new();
     for shift in shifts {
         let mut command = Command::new("powershell.exe");
@@ -278,11 +278,21 @@ fn main() -> anyhow::Result<()> {
             if p.is_file() && !queue_busy.swap(true,Ordering::SeqCst) {
                 let action=fs::read_to_string(&p).ok().and_then(|s|serde_json::from_str::<serde_json::Value>(&s).ok());
                 let _=fs::remove_file(&p);
-                if action.as_ref().and_then(|v|v["action"].as_str())==Some("tomorrow"){
-                    call_excel(queue_dir.clone(),"tomorrow",queue_busy.clone());
+                let requested=action.as_ref().and_then(|v|v["action"].as_str());
+                let allowed=match requested {
+                    Some("all")=>Some("all"),
+                    Some("day")=>Some("day"),
+                    Some("night")=>Some("night"),
+                    Some("refresh_times")=>Some("refresh_times"),
+                    Some("tomorrow")=>Some("tomorrow"),
+                    _=>None,
+                };
+                if let Some(action)=allowed {
+                    log(&queue_dir,&format!("Ribbon/Settings requested action={action}"));
+                    call_excel(queue_dir.clone(),action,queue_busy.clone());
                 } else {
                     queue_busy.store(false,Ordering::SeqCst);
-                    log(&queue_dir,"Invalid Settings command ignored.");
+                    log(&queue_dir,"Invalid Ribbon/Settings command ignored.");
                 }
             }
             thread::sleep(Duration::from_secs(2));
