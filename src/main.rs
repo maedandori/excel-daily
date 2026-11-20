@@ -227,7 +227,7 @@ fn main() -> anyhow::Result<()> {
     fs::write(dir.join("agent_presence.ps1"), include_str!("../scripts/agent_presence.ps1"))?;
     fs::write(dir.join("check_update.ps1"), include_str!("../scripts/check_update.ps1"))?;
     fs::write(dir.join("apply_update.ps1"), include_str!("../scripts/apply_update.ps1"))?;
-    fs::write(dir.join("install-ribbon.ps1"), format!("\u{feff}{}", include_str!("../scripts/install-ribbon.ps1")))?;
+    fs::write(dir.join("install-ribbon.ps1"), include_str!("../scripts/install-ribbon.ps1"))?;
     ensure_ribbon_registered(&dir);
     let version_path=dir.join("excel-daily-version.json");
     let version_info=serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id()});
