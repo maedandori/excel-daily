@@ -341,6 +341,7 @@ fn main() -> anyhow::Result<()> {
                         if !std::path::Path::new(full_name).is_absolute() {
                             queue_busy.store(false,Ordering::SeqCst);
                             log(&queue_dir,"Invalid Ribbon workbook target; request dropped.");
+                            status::write(&queue_dir,"error","Workbook không hợp lệ; không sửa Excel.");
                             continue;
                         }
                     }
@@ -348,6 +349,7 @@ fn main() -> anyhow::Result<()> {
                 } else {
                     queue_busy.store(false,Ordering::SeqCst);
                     log(&queue_dir,"Invalid Ribbon/Settings command ignored.");
+                    status::write(&queue_dir,"error","Lệnh không hợp lệ; không sửa Excel.");
                 }
             }
             thread::sleep(Duration::from_secs(2));
