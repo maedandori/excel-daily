@@ -1,4 +1,4 @@
-﻿param([switch]$SelfTest,[string]$ConfigPath='')
+param([switch]$SelfTest,[string]$ConfigPath='')
 $ErrorActionPreference='Stop'
 $dir=if($ConfigPath){Split-Path -Parent ([IO.Path]::GetFullPath($ConfigPath))}else{$PSScriptRoot}
 $file=if($ConfigPath){[IO.Path]::GetFullPath($ConfigPath)}else{Join-Path $dir 'settings.json'}
@@ -126,6 +126,14 @@ try {
   $script:Cfg.app.start_with_windows=[bool]$script:Startup.Checked
   $script:Cfg.auto_update.enabled=[bool]$script:Auto.Checked
   [IO.File]::WriteAllText($file,(ConvertTo-Json -InputObject $script:Cfg -Depth 25),([Text.UTF8Encoding]::new($false)))
+  $runKey='HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+  if(!(Test-Path -LiteralPath $runKey)){New-Item -Path $runKey -Force|Out-Null}
+  $agentExe=Join-Path $dir 'excel-daily.exe'
+  if($script:Cfg.app.start_with_windows){
+   Set-ItemProperty -LiteralPath $runKey -Name 'ExcelDaily' -Value ('"'+$agentExe+'"') -Type String
+  }else{
+   Remove-ItemProperty -LiteralPath $runKey -Name 'ExcelDaily' -ErrorAction SilentlyContinue
+  }
  }
  function StopOwnAgent {
   $agentPath=Join-Path $dir 'excel-daily.exe'
