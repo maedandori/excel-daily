@@ -1,4 +1,4 @@
-param([switch]$SelfTest,[string]$ConfigPath='')
+﻿param([switch]$SelfTest,[string]$ConfigPath='')
 $ErrorActionPreference='Stop'
 $dir=if($ConfigPath){Split-Path -Parent ([IO.Path]::GetFullPath($ConfigPath))}else{$PSScriptRoot}
 $file=if($ConfigPath){[IO.Path]::GetFullPath($ConfigPath)}else{Join-Path $dir 'settings.json'}
