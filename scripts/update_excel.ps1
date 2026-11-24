@@ -43,59 +43,97 @@ function PaintColorCell($sheet,[string]$column,[int]$row,[string]$label){
  return $true
 }
 
-# Managed, printable badges: never delete unrelated workbook shapes.
-function SetMoldColorBadge($sheet,[string]$column,[int]$row,$event){
-    if($TimeOnly -or $null -eq $event.PSObject.Properties['color_changed']){return}
-    $name="ExcelDaily_ColorBadge_${column}_${row}"
-    try {
-        $shape=$null
-        try{$shape=$sheet.Shapes.Item($name)}catch{}
-        $marker='ExcelDaily managed color badge'
-        if($null -ne $shape -and $shape.AlternativeText -ne $marker){return}
-        if($event.color_changed -ne $true){
-            if($null -ne $shape){$shape.Delete()}
-            return
-        }
-        $cell=ExcelCell $sheet $column $row
-        if($cell.MergeCells){$cell=$cell.MergeArea}
-        $width=[Math]::Min(36.0,[double]$cell.Width*0.40)
-        $height=[Math]::Min(14.0,[double]$cell.Height-2)
-        if($width -lt 10 -or $height -lt 6){return}
-        # Right edge of the machine cell; keep the centered machine number visible.
-        $left=[double]$cell.Left+[double]$cell.Width-$width-1
-        $top=[double]$cell.Top+([double]$cell.Height-$height)/2
-        if($null -eq $shape){
-            $shape=$sheet.Shapes.AddShape(5,[single]$left,[single]$top,[single]$width,[single]$height)
-            $shape.Name=$name
-            $shape.AlternativeText=$marker
-        }
-        $shape.Left=$left; $shape.Top=$top; $shape.Width=$width; $shape.Height=$height
-        $shape.Placement=1
-        $shape.Fill.ForeColor.RGB=0x0067F9
-        $shape.Line.Visible=0
-        $shape.TextFrame.Characters().Text='色替え'
-        $shape.TextFrame.Characters().Font.Color=0xFFFFFF
-        $shape.TextFrame.Characters().Font.Bold=$true
-        $shape.TextFrame.Characters().Font.Size=[Math]::Min(8,[Math]::Max(4,[Math]::Min($height-2,$width/3)))
-        $shape.TextFrame.HorizontalAlignment=-4108
-        $shape.TextFrame.VerticalAlignment=-4108
-        $shape.TextFrame.MarginLeft=0; $shape.TextFrame.MarginRight=0
-        $shape.TextFrame.MarginTop=0; $shape.TextFrame.MarginBottom=0
-        try{$shape.DrawingObject.PrintObject=$true}catch{}
-    }catch{Write-Output "色替えマーク更新失敗: $row / $($_.Exception.Message)"}
+# Managed printable badges; preserve any unrelated workbook Shapes.
+function SetScheduleBadges($sheet,[string]$column,[int]$row,$event,$cfg){
+ if($TimeOnly){return}
+ try {
+  $cell=ExcelCell $sheet $column $row
+  if($cell.MergeCells){$cell=$cell.MergeArea}
+  $tags=@()
+  if($event.kind -eq 'mold' -and $event.color_changed -eq $true){
+   $tags+=@{key='Color';label='色替え';short='色';rgb=0x0067F9;marker='ExcelDaily managed color badge';detail='色替え'}
+  }
+  if($event.stamp_changed -eq $true){
+   $tags+=@{key='Stamp';label='刻印替え';short='刻';rgb=0xB36325;marker='ExcelDaily managed stamp badge';detail='刻印替え'}
+  }
+  $materials=@()
+  if($cfg.drying.enabled -ne $false){
+   $materials=@(GetDryingMaterialsForEvent $event @($script:DryingEntries) | Select-Object -Unique)
+   if($event.PSObject.Properties['drying_materials']){
+    $materials=@($event.drying_materials | Where-Object{$_ -in @('ABS','PS-TH21','PC','ナイロン','AS')} | Select-Object -Unique)
+   }
+  }
+  if($materials.Count){
+   $tags+=@{key='Drying';label='乾燥';short='乾';rgb=0x2626DC;marker='ExcelDaily managed drying badge';detail=('乾燥: '+($materials -join ' / '))}
+  }
+  $active=@{}
+  foreach($tag in $tags){$active[$tag.key]=$true}
+  $markers=@{Color='ExcelDaily managed color badge';Stamp='ExcelDaily managed stamp badge';Drying='ExcelDaily managed drying badge'}
+  foreach($key in $markers.Keys){
+   $shape=$null
+   try{$shape=$sheet.Shapes.Item("ExcelDaily_${key}Badge_${column}_${row}")}catch{}
+   if($null -ne $shape -and $shape.AlternativeText -eq $markers[$key] -and !$active.ContainsKey($key)){$shape.Delete()}
+  }
+  if(!$tags.Count){$cell.HorizontalAlignment=-4108;return}
+  # Reserve space for the machine number, including merged cells.
+  $height=[Math]::Min(14.0,[double]$cell.Height-2)
+  $machineWidth=[Math]::Max(14.0,([string]$event.machine).Length*[double]$cell.Font.Size*0.65+4)
+  $available=[double]$cell.Width-$machineWidth-2-($tags.Count-1)
+  $width=[Math]::Min(36.0,$available/$tags.Count)
+  if($width -lt 7 -or $height -lt 6){
+   foreach($tag in $tags){
+    try{$shape=$sheet.Shapes.Item("ExcelDaily_$($tag.key)Badge_${column}_${row}");if($shape.AlternativeText -eq $tag.marker){$shape.Delete()}}catch{}
+   }
+   $cell.HorizontalAlignment=-4108
+   Write-Output "予定マークの表示幅が不足しています: $column$row"
+   return
+  }
+  $cell.HorizontalAlignment=-4131
+  $top=[double]$cell.Top+([double]$cell.Height-$height)/2
+  $left=[double]$cell.Left+[double]$cell.Width-1-($width*$tags.Count)-($tags.Count-1)
+  foreach($tag in $tags){
+   $name="ExcelDaily_$($tag.key)Badge_${column}_${row}"
+   $shape=$null
+   try{$shape=$sheet.Shapes.Item($name)}catch{}
+   if($null -ne $shape -and $shape.AlternativeText -ne $tag.marker){$left+=$width+1;continue}
+   if($null -eq $shape){
+    $shape=$sheet.Shapes.AddShape(5,[single]$left,[single]$top,[single]$width,[single]$height)
+    $shape.Name=$name
+    $shape.AlternativeText=$tag.marker
+   }
+   $shape.Left=$left;$shape.Top=$top;$shape.Width=$width;$shape.Height=$height
+   $shape.Placement=1
+   $shape.Fill.ForeColor.RGB=[int]$tag.rgb
+   $shape.Line.Visible=0
+   $label=if($width -ge ($tag.label.Length*6+2)){$tag.label}else{$tag.short}
+   $shape.TextFrame.Characters().Text=$label
+   $shape.TextFrame.Characters().Font.Color=0xFFFFFF
+   $shape.TextFrame.Characters().Font.Bold=$true
+   $shape.TextFrame.Characters().Font.Size=[Math]::Min(8,[Math]::Max(4,[Math]::Min($height-2,($width-1)/$label.Length)))
+   $shape.TextFrame.HorizontalAlignment=-4108
+   $shape.TextFrame.VerticalAlignment=-4108
+   $shape.TextFrame.MarginLeft=0;$shape.TextFrame.MarginRight=0
+   $shape.TextFrame.MarginTop=0;$shape.TextFrame.MarginBottom=0
+   try{$shape.Title=$tag.detail}catch{}
+   try{$shape.DrawingObject.PrintObject=$true}catch{}
+   if($tag.key -eq 'Drying'){$script:DryingBadgeCount++}
+   $left+=$width+1
+  }
+ }catch{Write-Output "予定マーク更新失敗: $column$row / $($_.Exception.Message)"}
 }
-function RemoveUnusedMoldColorBadges($sheet,[string]$column,[int]$start,[int]$step,[int]$count,$activeRows){
-    if($TimeOnly){return}
-    for($i=0;$i -lt $count;$i++){
-        $row=$start+$i*$step
-        if($activeRows.ContainsKey($row)){continue}
-        $shape=$null
-        try{$shape=$sheet.Shapes.Item("ExcelDaily_ColorBadge_${column}_${row}")}catch{}
-        if($null -ne $shape -and $shape.AlternativeText -eq 'ExcelDaily managed color badge'){
-            # Preserve past/manual entries; remove orphan badges on empty cells.
-            if((CellValue $sheet $column $row) -eq ''){try{$shape.Delete()}catch{}}
-        }
-    }
+function RemoveUnusedScheduleBadges($sheet,[string]$column,[int]$start,[int]$step,[int]$count){
+ if($TimeOnly){return}
+ $markers=@{Color='ExcelDaily managed color badge';Stamp='ExcelDaily managed stamp badge';Drying='ExcelDaily managed drying badge'}
+ for($i=0;$i -lt $count;$i++){
+  $row=$start+$i*$step
+  if((CellValue $sheet $column $row) -ne ''){continue}
+  foreach($key in $markers.Keys){
+   try{$shape=$sheet.Shapes.Item("ExcelDaily_${key}Badge_${column}_${row}");if($shape.AlternativeText -eq $markers[$key]){$shape.Delete()}}catch{}
+  }
+  $cell=ExcelCell $sheet $column $row
+  if($cell.MergeCells){$cell=$cell.MergeArea}
+  $cell.HorizontalAlignment=-4108
+ }
 }
 
 function NormalizeName([string]$name) { return $name.Trim().Replace([char]0x3000, ' ') }
@@ -384,7 +422,7 @@ $ordered = @($usable | Sort-Object scheduled_at)
 $started=[DateTime]::UtcNow
 $colored=0
 $nextSlot=@{mold=0;color=0}
-$badgeRows=@{}
+$script:DryingBadgeCount=0
 $screenChanged=$false;$eventsChanged=$false
 if($fastWrites){
  try{$oldScreen=[bool]$excel.ScreenUpdating;$excel.ScreenUpdating=$false;$screenChanged=$true}catch{}
@@ -419,7 +457,7 @@ foreach ($e in $ordered) {
         $row = [int]$previous.row
         $previousMachine = CellValue $sheet $machineCol $row
         if ($previousMachine -eq $machine) {
-            if($kind -eq 'mold' -and -not $TimeOnly){$badgeRows[$row]=$true; SetMoldColorBadge $sheet $machineCol $row $e}
+            if(-not $TimeOnly){SetScheduleBadges $sheet $machineCol $row $e $cfg}
             if ($past -or ([bool]$cfg.update_policy.preserve_past -and (-not $carryover) -and
                 $previous.scheduled_at -and ([DateTime]::Parse([string]$previous.scheduled_at) -le $now))) {
                 if (-not $TimeOnly -and $kind -eq 'color') { RepairColorIfBroken $sheet $cfg $e $row }
@@ -449,7 +487,7 @@ foreach ($e in $ordered) {
         continue
     }
     if($adopt -gt 0) {
-        if($kind -eq 'mold'){$badgeRows[$adopt]=$true; SetMoldColorBadge $sheet $machineCol $adopt $e}
+        SetScheduleBadges $sheet $machineCol $adopt $e $cfg
         if(-not $past) {
             $newTime=EventTime $e
             if((ExcelTimeText $sheet $timeCol $adopt) -ne $newTime) {
@@ -480,7 +518,7 @@ foreach ($e in $ordered) {
     }
     PutValue $sheet $machineCol $emptyRow $machine
     PutValue $sheet $timeCol $emptyRow (EventTime $e)
-    if($kind -eq 'mold'){$badgeRows[$emptyRow]=$true; SetMoldColorBadge $sheet $machineCol $emptyRow $e}
+    SetScheduleBadges $sheet $machineCol $emptyRow $e $cfg
     if ($kind -eq "color") {
         if ($e.color_before) {
             $col=[string]$cfg.columns.color_before
@@ -496,8 +534,8 @@ foreach ($e in $ordered) {
     $state[$key] = @{row=$emptyRow; scheduled_at=[string]$e.scheduled_at}
     $added++
 }
-RemoveUnusedMoldColorBadges $sheet ([string]$cfg.columns.mold_machine) $start $step $count $badgeRows
-$dryingStats=UpdateDryingTable -sheet $sheet -cfg $cfg -book $book -state $state -now $now -timeOnly ([bool]$TimeOnly) -entries @($script:DryingEntries)
+RemoveUnusedScheduleBadges $sheet ([string]$cfg.columns.mold_machine) $start $step $count
+RemoveUnusedScheduleBadges $sheet ([string]$cfg.columns.color_machine) $start $step $count
 # Save only our local row-ID state. The open Excel workbook remains unsaved.
 $json = ConvertTo-Json -InputObject $state -Depth 5
 [System.IO.File]::WriteAllText($metadataPath, $json, (New-Object System.Text.UTF8Encoding($false)))
@@ -505,7 +543,7 @@ if ($cfg.update_policy.save_automatically -eq $true) {
     $book.Save()
 }
 $elapsed=[int]([DateTime]::UtcNow-$started).TotalMilliseconds
-Write-Output "date_offset=$DateOffset; shift=$Shift; Workbook=$($book.Name); sheet=$($sheet.Name); added=$added; updated_times=$changed; colored_cells=$colored; preserved=$kept; drying_added=$($dryingStats.added); drying_updated_times=$($dryingStats.updated); drying_preserved=$($dryingStats.preserved); elapsed_ms=$elapsed; excel_saved=$($cfg.update_policy.save_automatically)"
+Write-Output "date_offset=$DateOffset; shift=$Shift; Workbook=$($book.Name); sheet=$($sheet.Name); added=$added; updated_times=$changed; colored_cells=$colored; preserved=$kept; drying_badges=$script:DryingBadgeCount; elapsed_ms=$elapsed; excel_saved=$($cfg.update_policy.save_automatically)"
 } finally {
  if($eventsChanged){try{$excel.EnableEvents=$oldEvents}catch{}}
  if($screenChanged){try{$excel.ScreenUpdating=$oldScreen}catch{}}
