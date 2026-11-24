@@ -8,17 +8,19 @@ on:
     paths:
       - 'src/**'
       - 'scripts/**'
+      - 'settings-tauri/**'
       - 'ribbon/**'
       - 'tests/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'build.rs'
+      - 'branding/**'
       - 'settings.json'
       - 'README.md'
       - '.github/workflows/build-windows.yml'
 
 concurrency:
-  group: excel-daily-windows-main
+  group: excel-daily-windows-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -93,6 +95,19 @@ jobs:
         run: cargo test --target x86_64-pc-windows-msvc
       - name: Build release with embedded icon
         run: cargo build --release --target x86_64-pc-windows-msvc
+      - name: Test Tauri Settings configuration and build
+        shell: pwsh
+        run: |
+          $rootVersion=(Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          $settingsVersion=(Select-String -Path settings-tauri/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          $uiVersion=(Get-Content settings-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if($rootVersion -ne $settingsVersion -or $rootVersion -ne $uiVersion){throw 'Settings version mismatch'}
+          node --check settings-tauri/ui/app.js
+          if($LASTEXITCODE -ne 0){throw 'Settings JavaScript syntax failed'}
+          cargo test --manifest-path settings-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Tauri Settings tests failed'}
+          cargo build --manifest-path settings-tauri/Cargo.toml --release --target x86_64-pc-windows-msvc
+          if($LASTEXITCODE -ne 0){throw 'Tauri Settings build failed'}
       - name: Build Excel 2019 Ribbon Add-in (x86 and x64, VBA-free)
         shell: pwsh
         run: |
@@ -116,7 +131,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           Copy-Item target/x86_64-pc-windows-msvc/release/excel-daily.exe dist/
-          Copy-Item target/x86_64-pc-windows-msvc/release/excel-daily-settings.exe dist/
+          Copy-Item settings-tauri/target/x86_64-pc-windows-msvc/release/excel-daily-settings.exe dist/
           Copy-Item settings.json dist/
           Copy-Item events.example.json dist/
           Copy-Item README.md dist/
