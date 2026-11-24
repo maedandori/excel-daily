@@ -1,6 +1,6 @@
 {
   "productName": "Excel Daily Settings",
-  "version": "0.3.21",
+  "version": "0.3.22",
   "identifier": "jp.maedandori.excel-daily.settings",
   "build": {
     "frontendDist": "ui"

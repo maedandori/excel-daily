@@ -1,8 +1,8 @@
 'use strict';
 const $=id=>document.getElementById(id);
 const invoke=(name,args)=>window.__TAURI__.core.invoke(name,args);
-const fields=['name','url','token','pattern','selected','day_sheet','night_sheet','startup','auto_update','remote_update','day','night','refresh','tomorrow'];
-const bools=new Set(['startup','auto_update','remote_update']);
+const fields=['name','url','token','pattern','selected','day_sheet','night_sheet','startup','auto_update','remote_update','auto_save','auto_save_minutes','day','night','refresh','tomorrow'];
+const bools=new Set(['startup','auto_update','remote_update','auto_save']);
 const hotkeys=['day','night','refresh','tomorrow'];
 const titles={general:['一般設定','端末とエージェントの動作を設定します。'],connection:['接続設定','Machine-control への接続情報を管理します。'],excel:['Excel 設定','対象のブックと勤務シートを指定します。'],keys:['ショートカット','キーボード操作をカスタマイズします。'],updates:['更新・管理','バージョンと翌日の予定を管理します。']};
 let ready=false,working=false,updating=false,dirty=false,statusBusy=false;
@@ -10,7 +10,7 @@ function say(message,error=false){$('message').textContent=String(message);$('me
 function buttons(){for(const id of ['save','restart','stop','checkUpdate','importTomorrow'])$(id).disabled=!ready||working||updating;for(const key of fields)$(key).disabled=!ready||working||updating}
 function setDirty(value){dirty=value;$('dirty').textContent=dirty?'未保存の変更があります':'保存済み'}
 function showStatus(s){const label=s.busy?'処理中':s.running?'起動中':'停止中';$('agentState').textContent=label;$('sideState').textContent=label;$('agentVersion').textContent=s.version?'v'+s.version:label;$('statusDot').className='dot '+(s.busy?'busy':s.running?'on':'');document.querySelector('.aside-bottom .dot').className=$('statusDot').className}
-function form(){return Object.fromEntries(fields.map(key=>[key,bools.has(key)?$(key).checked:$(key).value]))}
+function form(){return Object.fromEntries(fields.map(key=>[key,bools.has(key)?$(key).checked:key==='auto_save_minutes'?$(key).valueAsNumber:$(key).value]))}
 async function refreshStatus(){if(statusBusy||working||updating)return;statusBusy=true;try{showStatus(await invoke('agent_action',{action:'status'}))}catch{ $('agentState').textContent='確認できません' }finally{statusBusy=false}}
 async function persist(){await invoke('save_settings',{form:form()});setDirty(false)}
 async function run(work){if(working||updating||!ready)return;working=true;buttons();try{await work()}catch(e){say(e,true)}finally{working=false;buttons()}}

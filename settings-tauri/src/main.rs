@@ -17,6 +17,7 @@ struct SettingsForm {
     name:String, url:String, token:String, pattern:String, selected:String,
     day_sheet:String, night_sheet:String, startup:bool, auto_update:bool, remote_update:bool,
     day:String, night:String, refresh:String, tomorrow:String,
+    auto_save:bool, auto_save_minutes:u32,
 }
 fn dir()->Result<PathBuf,String>{
     env::current_exe().map_err(|_|"設定の保存先を取得できません。".to_owned())?
@@ -52,6 +53,8 @@ fn to_form(v:&Value)->SettingsForm{
         selected:text_at(v,"workbook","selected_workbook",""),day_sheet:text_at(v,"sheets","day",&d("sheets","day")),
         night_sheet:text_at(v,"sheets","night",&d("sheets","night")),
         startup:flag(v,"app","start_with_windows",false),auto_update:flag(v,"auto_update","enabled",true),
+        auto_save:flag(v,"auto_save","enabled",true),
+        auto_save_minutes:v["auto_save"]["interval_minutes"].as_u64().filter(|n|(1..=120).contains(n)).unwrap_or(15) as u32,
         remote_update:flag(v,"agent","remote_update",true),day:text_at(v,"hotkeys","day","Ctrl+1"),
         night:text_at(v,"hotkeys","night","Ctrl+2"),refresh:text_at(v,"hotkeys","refresh","Ctrl+3"),tomorrow:text_at(v,"hotkeys","tomorrow","Ctrl+4")
     }
@@ -71,7 +74,9 @@ fn merge_form(mut v:Value,f:&SettingsForm)->Result<Value,String>{
     }
     let keys=hotkeys::HotkeyOptions{day:f.day.clone(),night:f.night.clone(),refresh:f.refresh.clone(),tomorrow:f.tomorrow.clone()};
     hotkeys::validate_hotkeys(&keys).map_err(|_|"ショートカットキーが重複しているか無効です。")?;
+    if !(1..=120).contains(&f.auto_save_minutes){return Err("自動保存間隔は1〜120分で指定してください。".into())}
     for (group,key,value) in [
+        ("auto_save","enabled",json!(f.auto_save)),("auto_save","interval_minutes",json!(f.auto_save_minutes)),
         ("agent","display_name",json!(f.name.trim())),("agent","remote_update",json!(f.remote_update)),
         ("data_source","api_url",json!(f.url.trim())),("data_source","api_token",json!(f.token.trim())),
         ("workbook","filename_pattern",json!(f.pattern)),("workbook","selected_workbook",json!(f.selected)),
@@ -180,6 +185,17 @@ mod tests{
         let mut f=to_form(&v);f.name="第一工場".into();f.token="local-only".into();
         let result=merge_form(v,&f).unwrap();assert_eq!(result["rows"]["step"],3);assert_eq!(result["extra"]["value"],42);
         assert_eq!(result["agent"]["display_name"],"第一工場");assert_eq!(result["data_source"]["api_token"],"local-only");
+    }
+    #[test]fn autosave_defaults_and_roundtrip(){
+        let mut v=parse_cfg(DEFAULT_CFG).unwrap();
+        v.as_object_mut().unwrap().remove("auto_save");
+        let mut f=to_form(&v);
+        assert!(f.auto_save);assert_eq!(f.auto_save_minutes,15);
+        f.auto_save=false;f.auto_save_minutes=30;
+        let result=merge_form(v.clone(),&f).unwrap();
+        assert_eq!(result["auto_save"]["enabled"],false);
+        assert_eq!(result["auto_save"]["interval_minutes"],30);
+        f.auto_save_minutes=0;assert!(merge_form(v,&f).is_err());
     }
     #[test]fn invalid_inputs_are_rejected(){
         let v=parse_cfg(DEFAULT_CFG).unwrap();let mut f=to_form(&v);f.tomorrow=f.day.clone();

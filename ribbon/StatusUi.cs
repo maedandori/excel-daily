@@ -52,6 +52,7 @@ namespace ExcelDailyRibbon
 
         public void AutoClose()
         {
+            WorkbookAutoSave.Stop();
             if (_timer != null) { _timer.Stop(); _timer.Dispose(); _timer = null; }
             try { ((dynamic)ExcelDnaUtil.Application).StatusBar = false; } catch { }
             _ribbon = null;
@@ -82,6 +83,7 @@ namespace ExcelDailyRibbon
             _timer = new Timer { Interval = 600 };
             _timer.Tick += (sender, args) => Poll();
             _timer.Start();
+            WorkbookAutoSave.Start(_directory);
         }
 
         public static bool Guard()
