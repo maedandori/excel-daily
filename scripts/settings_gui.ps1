@@ -212,7 +212,7 @@ try {
       'CHECKING' {$script:Status.Text='最新バージョンを確認しています…'}
       'DOWNLOADING' {$script:Status.Text='更新ファイルをダウンロードしています…'}
       'UPDATE_READY' {$script:Status.Text='更新の準備が完了しました。自動的に適用します。'}
-      'UPDATE_DEFERRED' {$script:Status.Text='Excelが開いているため更新を保留しました。終了後に再試行します。'}
+      'UPDATE_DEFERRED' {$script:Status.Text='予定更新の処理中です。完了後に再試行してください。'}
       'UP_TO_DATE' {$script:Status.Text='最新版を使用しています。'}
       'UPDATE_FAILED*' {$script:Status.Text='更新に失敗しました。ログを確認してください。'}
       default {$script:Status.Text='更新状況を確認しています…'}

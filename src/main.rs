@@ -183,8 +183,8 @@ fn check_for_update(dir: &Path, exe: &Path, repo: &str) -> UpdateDecision {
                 log(dir, &format!("Update check failed: {}", String::from_utf8_lossy(&o.stderr)));
                 status::write(dir, "error", "更新の確認に失敗しました。詳細はexcel-daily.logを確認してください。");
             } else if stdout.contains("UPDATE_DEFERRED") {
-                log(dir, "UPDATE_DEFERRED: Excel open or workbook task active.");
-                status::write(dir, "deferred", "自動更新を保留しました。Excelを閉じると再確認します。");
+                log(dir, "UPDATE_DEFERRED: workbook task active.");
+                status::write(dir, "deferred", "自動更新を保留しました。処理完了後に再確認します。");
                 return UpdateDecision::Deferred;
             } else if stdout.contains("UPDATE_READY") {
                 log(dir, "A verified update is staged; exiting for replacement.");
@@ -267,6 +267,20 @@ fn main() -> anyhow::Result<()> {
     fs::write(dir.join("apply_update.ps1"), include_str!("../scripts/apply_update.ps1"))?;
     fs::write(dir.join("update_safety.ps1"), include_str!("../scripts/update_safety.ps1"))?;
     fs::write(dir.join("install-ribbon.ps1"), include_str!("../scripts/install-ribbon.ps1"))?;
+    // Finish a staged Ribbon update at startup and periodically, even if
+    // automatic release checks are disabled.
+    let pending_dir=dir.clone();
+    thread::spawn(move || loop {
+        if pending_dir.join("ExcelDailyRibbon.xll.pending").exists() ||
+           pending_dir.join("ExcelDailyRibbon64.xll.pending").exists() {
+            let _=Command::new("powershell.exe")
+                .args(["-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-Command"])
+                .arg("$ErrorActionPreference='Stop'; . (Join-Path (Get-Location) 'update_safety.ps1'); $null=Complete-ExcelDailyPendingRibbon -Root (Get-Location).Path")
+                .current_dir(&pending_dir).creation_flags(CREATE_NO_WINDOW)
+                .stdin(Stdio::null()).output();
+        }
+        thread::sleep(Duration::from_secs(15));
+    });
     ensure_ribbon_registered(&dir);
     let version_path=dir.join("excel-daily-version.json");
     let version_info=serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id()});
@@ -304,7 +318,7 @@ fn main() -> anyhow::Result<()> {
         let update_repo = cfg.auto_update.repository.clone();
         let hours = cfg.auto_update.check_interval_hours.clamp(1, 168);
         thread::spawn(move || {
-            // Excel running: retry cheaply (no network) until user closes it.
+            // Retry after the current workbook operation, even with Excel open.
             thread::sleep(Duration::from_secs(60));
             loop {
                 let mut deferred = false;
@@ -341,7 +355,7 @@ fn main() -> anyhow::Result<()> {
                                     let _=agent_presence(&dir2,Some(cmd),Some("failed"));
                                 }
                                 UpdateDecision::Deferred => {
-                                    // Keep remote command pending; retry when Excel closes.
+                                    // Keep remote command pending until the current workbook operation finishes.
                                     log(&dir2,"Admin update deferred; command left pending.");
                                 }
                             }

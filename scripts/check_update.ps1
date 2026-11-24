@@ -14,6 +14,7 @@ try {
  $dir=Split-Path -Parent $Executable
  $blocker=Get-ExcelDailyUpdateBlocker -Root $dir
  if($blocker){Status 'UPDATE_DEFERRED';Write-Output 'UPDATE_DEFERRED';exit 0}
+ $null=Complete-ExcelDailyPendingRibbon -Root $dir
  if($Repo -ne 'maedandori/excel-daily'){throw '更新元のリポジトリが正しくありません。'}
  if($CurrentVersion -notmatch '^\d+\.\d+\.\d+$'){throw '現在のバージョンが正しくありません。'}
  [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12

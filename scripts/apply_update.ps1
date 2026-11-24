@@ -44,12 +44,11 @@ try {
    if(Get-Process -Id $PidToWait -ErrorAction SilentlyContinue){throw '更新元の終了を確認できません。'}
   }
  }
- # User safety: an XLL cannot be atomically replaced while Excel uses it.
- # Defer the WHOLE release rather than installing EXE/XLL from different versions.
+ # Wait for an active workbook write, not for Excel itself to close.
  $reason=Get-ExcelDailyUpdateBlocker -Root $dir
  if($reason){
   Log ('UPDATE_DEFERRED reason='+$reason)
-  UpdateStatus 'deferred' '更新を保留しました。Excelを閉じてから再試行します。'
+  UpdateStatus 'deferred' '更新処理中のため保留しました。完了後に再試行します。'
   $id=RestartAgent
   Log ('OLD_AGENT_RESTARTED pid='+$id)
   exit 0
@@ -67,7 +66,7 @@ try {
  $reason=Get-ExcelDailyUpdateBlocker -Root $dir
  if($reason){
   Log ('UPDATE_DEFERRED_AFTER_STOP reason='+$reason)
-  UpdateStatus 'deferred' '更新を保留しました。Excelを終了してから再試行します。'
+  UpdateStatus 'deferred' '更新処理中のため保留しました。完了後に再試行します。'
   $id=RestartAgent
   $stopped=$false
   Log ('OLD_AGENT_RESTARTED pid='+$id)
@@ -75,18 +74,22 @@ try {
  }
  New-Item -ItemType Directory -Path $backup -Force | Out-Null
  $copyStarted=$true
- # Replace XLL first. If it is locked, stop here and restore the OLD EXE.
+ # Keep the running Excel session intact. Stage XLLs separately if loaded.
+ $ribbonPending=$false
  foreach($name in $required){
-  $dst=Join-Path $dir $name
+  # Always stage XLLs; the agent can run with the previous compatible Ribbon.
+  # This also avoids a race when Excel starts during installation.
+  $destName=if($name -like '*.xll'){$ribbonPending=$true;$name+'.pending'}else{$name}
+  $dst=Join-Path $dir $destName
   $hadOld=Test-Path -LiteralPath $dst
-  if($hadOld){Copy-Item -LiteralPath $dst -Destination (Join-Path $backup $name) -Force -ErrorAction Stop}
-  $copied+=@{path=$dst;name=$name;hadOld=$hadOld}
+  if($hadOld){Copy-Item -LiteralPath $dst -Destination (Join-Path $backup $destName) -Force -ErrorAction Stop}
+  $copied+=@{path=$dst;name=$destName;hadOld=$hadOld}
   Copy-Item -LiteralPath (Join-Path $stage $name) -Destination $dst -Force -ErrorAction Stop
  }
  $id=RestartAgent
  $stopped=$false
  Log ('UPDATE_SUCCESS version='+$TargetVersion+' pid='+$id)
- UpdateStatus 'success' ('更新が完了しました。バージョン '+$TargetVersion+'。Excelを再起動してください。')
+ UpdateStatus 'success' ('更新が完了しました。バージョン '+$TargetVersion+'。Excel Dailyを再起動しました。リボンはExcel終了後に更新します。')
 }catch{
  Log ('UPDATE_FAILED '+$_.Exception.Message)
  if($copyStarted){
