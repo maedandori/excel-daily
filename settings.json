@@ -4,6 +4,10 @@
     "start_with_windows": false,
     "show_status_on_start": false
   },
+  "auto_save": {
+    "enabled": true,
+    "interval_minutes": 15
+  },
   "workbook": {
     "filename_pattern": "成形スケジュール*.xlsx",
     "selected_workbook": "",

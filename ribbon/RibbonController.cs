@@ -19,7 +19,7 @@ namespace ExcelDailyRibbon
         {
             return @"<customUI xmlns='http://schemas.microsoft.com/office/2006/01/customui' onLoad='RibbonLoaded'>
               <ribbon><tabs>
-                <tab id='excelDaily' label='EXCEL-DAILY'>
+                <tab id='excelDaily' label='データ更新'>
                   <group id='updates' label='MICS 予定 / 更新'>
                     <button id='refreshData' label='データ更新' size='large'
                       imageMso='RefreshAll' getEnabled='IsCommandEnabled' onAction='OnUpdate'/>

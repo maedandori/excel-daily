@@ -34,6 +34,9 @@ try {
   $key=$entry[0]
   if(!$script:Cfg.hotkeys.PSObject.Properties[$key]){$script:Cfg.hotkeys|Add-Member -NotePropertyName $key -NotePropertyValue $entry[1]}
  }
+ if(!$script:Cfg.auto_save){$script:Cfg|Add-Member -NotePropertyName auto_save -NotePropertyValue ([pscustomobject]@{enabled=$true;interval_minutes=15}) -Force}
+ if(!$script:Cfg.auto_save.PSObject.Properties['enabled']){$script:Cfg.auto_save|Add-Member -NotePropertyName enabled -NotePropertyValue $true}
+ if(!$script:Cfg.auto_save.PSObject.Properties['interval_minutes']){$script:Cfg.auto_save|Add-Member -NotePropertyName interval_minutes -NotePropertyValue 15}
  $version=[string]$env:EXCEL_DAILY_SETTINGS_VERSION
  if(!$version){$version='不明'}
  $agentVersion='未起動'
@@ -106,6 +109,15 @@ try {
  HotkeyAt '翌日の予定' 'tomorrow' 366 420
  $null=LabelAt '翌日の予定：昼勤・夜勤の両方を取得し、既存データは削除しません。' 20 470 665
  $null=LabelAt '実行前に翌日用のExcelファイルを開いてください。' 20 497 665
+ $script:AutoSave=CheckAt 'Excel自動保存を有効' 20 ([bool]$script:Cfg.auto_save.enabled)
+ $script:AutoSave.Location=[System.Drawing.Point]::new(20,650)
+ $null=LabelAt '保存間隔（分）' 249 650 145
+ $script:AutoSaveMinutes=[System.Windows.Forms.NumericUpDown]::new()
+ $script:AutoSaveMinutes.Minimum=1;$script:AutoSaveMinutes.Maximum=120
+ $minutes=15
+ if([int]::TryParse([string]$script:Cfg.auto_save.interval_minutes,[ref]$minutes) -and $minutes -ge 1 -and $minutes -le 120){$script:AutoSaveMinutes.Value=$minutes}else{$script:AutoSaveMinutes.Value=15}
+ $script:AutoSaveMinutes.Location=[System.Drawing.Point]::new(400,650)
+ $form.Controls.Add($script:AutoSaveMinutes)
  $script:Status=LabelAt '準備完了：保存後にエージェントを再起動してください。' 20 709 665
  function SaveSettings {
   if($script:Fields['url'].Text -notmatch '^https://[^/]+/api/excel-daily/events$'){throw 'Worker APIのURLが正しくありません。'}
@@ -125,6 +137,8 @@ try {
   $script:Cfg.sheets.night=$script:Fields['nightSheet'].Text
   $script:Cfg.app.start_with_windows=[bool]$script:Startup.Checked
   $script:Cfg.auto_update.enabled=[bool]$script:Auto.Checked
+  $script:Cfg.auto_save.enabled=[bool]$script:AutoSave.Checked
+  $script:Cfg.auto_save.interval_minutes=[int]$script:AutoSaveMinutes.Value
   [IO.File]::WriteAllText($file,(ConvertTo-Json -InputObject $script:Cfg -Depth 25),([Text.UTF8Encoding]::new($false)))
   $runKey='HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
   if(!(Test-Path -LiteralPath $runKey)){New-Item -Path $runKey -Force|Out-Null}
