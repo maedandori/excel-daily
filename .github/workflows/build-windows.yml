@@ -33,13 +33,21 @@ jobs:
           targets: x86_64-pc-windows-msvc
       - name: Validate Rust
         run: cargo check --target x86_64-pc-windows-msvc
-      - name: Validate PowerShell syntax
-        shell: pwsh
+      - name: Validate PowerShell syntax and duplicate functions (Windows PowerShell 5.1)
+        shell: powershell
         run: |
-          foreach ($file in @('scripts/update_excel.ps1','scripts/check_update.ps1','scripts/apply_update.ps1','scripts/round_time.ps1','scripts/agent_presence.ps1','scripts/settings_gui.ps1','scripts/color_cells.ps1','scripts/drying.ps1','scripts/shift_date.ps1','scripts/settings_update_state.ps1','scripts/install-ribbon.ps1','scripts/update_safety.ps1')) {
+          $ErrorActionPreference = 'Stop'
+          foreach ($file in @(Get-ChildItem scripts,tests -Recurse -File -Filter '*.ps1')) {
             $tokens=$null; $errors=$null
-            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file),[ref]$tokens,[ref]$errors) | Out-Null
-            if ($errors.Count -gt 0) { $errors | Format-List | Out-String | Write-Error; exit 1 }
+            $ast=[System.Management.Automation.Language.Parser]::ParseFile($file.FullName,[ref]$tokens,[ref]$errors)
+            foreach($parseError in $errors){
+              Write-Host "$($file.Name):$($parseError.Extent.StartLineNumber):$($parseError.Extent.StartColumnNumber): $($parseError.Message)"
+            }
+            if($errors.Count){throw "PowerShell syntax failed: $($file.FullName)"}
+            if($file.Name -eq 'update_excel.ps1'){
+              $duplicates=@($ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true) | Group-Object Name | Where-Object Count -gt 1)
+              if($duplicates.Count){throw "Duplicate production functions: $($duplicates.Name -join ', ')"}
+            }
           }
       - name: Test Ribbon installer diagnostics (no Office required)
         shell: powershell
