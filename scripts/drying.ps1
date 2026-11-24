@@ -148,3 +148,21 @@ function UpdateDryingTable {
  }
  return $stats
 }
+
+# Join the two feeds by the exact encoded machine/order/sequence/tool/mold identity.
+# A machine number or rounded hour alone is never sufficient.
+function GetDryingMaterialsForEvent($event,[object[]]$entries){
+ $parts=([string]$event.id).Split(':')
+ if($parts.Count -ne 6 -or $parts[1] -notin @('mold','color')){return}
+ foreach($entry in $entries){
+  if([string]$entry.shift -ne [string]$event.shift -or [string]$entry.machine -ne [string]$event.machine){continue}
+  $d=([string]$entry.id).Split(':')
+  if($d.Count -ne 7 -or $d[1] -cne 'drying'){continue}
+  if($parts[0] -cne $d[0] -or $parts[2] -cne $d[2] -or $parts[3] -cne $d[3] -or
+     $parts[4] -cne $d[5] -or $parts[5] -cne $d[6]){continue}
+  if([string]$entry.scheduled_at -cne [string]$event.scheduled_at){continue}
+  foreach($material in @($entry.materials)){
+   if([string]$material -in @('ABS','PS-TH21','PC','ナイロン','AS')){[string]$material}
+  }
+ }
+}

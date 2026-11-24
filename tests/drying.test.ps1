@@ -15,7 +15,24 @@ if((DryingTimeFromConfig $cfg @('ABS','PC')) -ne '要確認'){throw 'Conflicting
 $cfg.drying.time_by_material.PC='2h'
 if((DryingTimeFromConfig $cfg @('ABS','PC')) -ne '2h'){throw 'Equal grade durations can be applied'}
 $main=Get-Content (Join-Path $PSScriptRoot '..\scripts\update_excel.ps1') -Raw -Encoding UTF8
-if($main -notmatch 'UpdateDryingTable' -or $main -notmatch 'DryingEntries'){throw 'Main update has lost drying support'}
+if($main -notmatch 'SetScheduleBadges' -or $main -notmatch 'DryingEntries' -or $main -match 'UpdateDryingTable -sheet'){throw 'Drying badges must replace table writes'}
 $agent=Get-Content (Join-Path $PSScriptRoot '..\src\main.rs') -Raw -Encoding UTF8
 if($agent -notmatch 'include_str!\("\.\./scripts/drying\.ps1"\)'){throw 'Auto-update EXE must embed drying.ps1; legacy updater only replaces EXE and XLL'}
 Write-Output 'DRYING_TESTS_OK'
+
+$fn=$ast.Find({param($x) $x -is [Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq 'GetDryingMaterialsForEvent'},$true)
+if(!$fn){throw 'Missing drying identity matcher'}
+Invoke-Expression $fn.Extent.Text
+$e=[pscustomobject]@{id='13:mold:ORD1:1:TOOL1:MOLD1';kind='mold';shift='day';machine='13';scheduled_at='2026-11-25T10:00:00'}
+$entries=@(
+ [pscustomobject]@{id='13:drying:ORD2:1:PART2:TOOL1:MOLD1';machine='13';shift='day';scheduled_at=$e.scheduled_at;materials=@('ABS')},
+ [pscustomobject]@{id='13:drying:ORD1:1:PART1:TOOL1:MOLD1';machine='13';shift='day';scheduled_at=$e.scheduled_at;materials=@('PC','AS')},
+ [pscustomobject]@{id='13:drying:ORD1:1:PART1:TOOL1:MOLD1';machine='13';shift='night';scheduled_at=$e.scheduled_at;materials=@('ナイロン')}
+)
+$result=@(GetDryingMaterialsForEvent $e $entries)
+if(($result -join ',') -ne 'PC,AS'){throw 'Drying must match the exact order, not only the machine/time'}
+$e.id='13:color:ORD1:1:TOOL1:MOLD1';$e.kind='color'
+if((@(GetDryingMaterialsForEvent $e $entries) -join ',') -ne 'PC,AS'){throw 'Color changes must also get drying badges'}
+$e.scheduled_at='2026-11-25T11:00:00'
+if(@(GetDryingMaterialsForEvent $e $entries).Count -ne 0){throw 'Different schedule time must not get a badge'}
+Write-Output 'DRYING_IDENTITY_TESTS_OK'
