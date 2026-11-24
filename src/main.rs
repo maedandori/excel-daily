@@ -135,9 +135,9 @@ fn call_excel(dir: PathBuf, action: &'static str, busy: Arc<AtomicBool>, workboo
                     let label = if *shift == "auto" {
                         sheet_target.as_deref().unwrap_or("選択中のシート")
                     } else if *shift == "day" { "昼勤" } else { "夜勤" };
-                    results.push(format!("{label}：新規{}件・時刻変更{}件・保持{}件／乾燥マーク{}件",
+                    results.push(format!("{label}：新規{}件・時刻変更{}件・保持{}件／乾燥マーク{}件・並べ替え{}件",
                         count("added="), count("updated_times="), count("preserved="),
-                        count("drying_badges=")));
+                        count("drying_badges="), count("reordered=")));
                 } else {
                     failures.push(format!("{}の更新に失敗しました",
                         if *shift == "auto" { "選択中のシート" } else if *shift == "day" { "昼勤" } else { "夜勤" }));

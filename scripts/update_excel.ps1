@@ -364,6 +364,136 @@ function FindExistingSlot($sheet,$cfg,$event,$state,$book,[int]$start,[int]$step
     if($candidates.Count -gt 1){return -1}
     return 0
 }
+
+# Sort only the slots belonging to known, pending events. Completed, manual,
+# carryover and untracked slots are never destination rows.
+function PlanPendingScheduleOrder([object[]]$pending){
+ foreach($kind in @('mold','color')){
+  $items=@($pending | Where-Object{$_.kind -eq $kind})
+  if($items.Count -lt 2){continue}
+  $slots=@($items | ForEach-Object{[int]$_.row} | Sort-Object -Unique)
+  if($slots.Count -ne $items.Count){continue}
+  $ordered=@($items | Sort-Object @{Expression={[datetime]$_.when}},@{Expression={[int]$_.row}})
+  for($i=0;$i -lt $slots.Count;$i++){
+   [pscustomobject]@{item=$ordered[$i];destination=[int]$slots[$i]}
+  }
+ }
+}
+# Move the existing managed Shapes, not unrelated worksheet objects.
+function MovePendingScheduleOrder($sheet,$cfg,$state,[object[]]$pending){
+ $moves=0
+ foreach($kind in @('mold','color')){
+  $plan=@(PlanPendingScheduleOrder @($pending|Where-Object{$_.kind -eq $kind}))
+  $moving=@($plan|Where-Object{[int]$_.item.row -ne [int]$_.destination})
+  if(!$moving.Count){continue}
+  $machineCol=if($kind -eq 'mold'){[string]$cfg.columns.mold_machine}else{[string]$cfg.columns.color_machine}
+  $timeCol=if($kind -eq 'mold'){[string]$cfg.columns.mold_time}else{[string]$cfg.columns.color_time}
+  $columns=@($machineCol,$timeCol)
+  $colorColumns=@()
+  if($kind -eq 'color'){
+   $colorColumns=@([string]$cfg.columns.color_before,[string]$cfg.columns.color_after)
+   $columns+=@($colorColumns)
+  }
+  if(@($columns|Where-Object{!$_}).Count -or @($columns|Select-Object -Unique).Count -ne $columns.Count){continue}
+  $markers=@{Color='ExcelDaily managed color badge';Stamp='ExcelDaily managed stamp badge';Drying='ExcelDaily managed drying badge'}
+  $snap=@{}
+  $shapes=@()
+  $addresses=@{}
+  $blocked=$false
+  # Stage every source before overwriting a single cell. Preserve number formats,
+  # borders and merged-cell layout. Only transfer values and event-specific colors.
+  foreach($move in $moving){
+   $row=[int]$move.item.row
+   $cells=@{}
+   foreach($col in $columns){
+    $cell=ExcelCell $sheet $col $row
+    $address=[string]$cell.Address()
+    if($addresses.ContainsKey($address) -or $cell.HasFormula -or ($sheet.ProtectContents -and $cell.Locked)){
+     $blocked=$true;break
+    }
+    $addresses[$address]=$true
+    $entry=@{value=$cell.Value2}
+    $range=$cell
+    if($cell.MergeCells){$range=$cell.MergeArea}
+    if($col -eq $machineCol){$entry.alignment=$range.HorizontalAlignment}
+    if($colorColumns -contains $col){
+     $entry.pattern=$range.Interior.Pattern
+     $entry.background=$range.Interior.Color
+     $entry.foreground=$range.Font.Color
+    }
+    $cells[$col]=$entry
+   }
+   if($blocked){break}
+   $snap[$row]=$cells
+   $machineCell=ExcelCell $sheet $machineCol $row
+   if($machineCell.MergeCells){$machineCell=$machineCell.MergeArea}
+   foreach($tag in $markers.Keys){
+    $name="ExcelDaily_${tag}Badge_${machineCol}_${row}"
+    $shape=$null
+    try{$shape=$sheet.Shapes.Item($name)}catch{}
+    if($null -eq $shape){continue}
+    if($shape.AlternativeText -ne $markers[$tag] -or $sheet.ProtectDrawingObjects){$blocked=$true;break}
+    $shapes+=@{shape=$shape;name=$name;tag=$tag;row=$row;destination=[int]$move.destination;
+      left=[double]$shape.Left;top=[double]$shape.Top;
+      dx=([double]$shape.Left-[double]$machineCell.Left);dy=([double]$shape.Top-[double]$machineCell.Top);
+      width=[double]$shape.Width;height=[double]$shape.Height}
+   }
+   if($blocked){break}
+  }
+  if($blocked){Write-Output "並べ替え対象に保護セル・数式・未管理マークがあります: $kind";continue}
+  # Destination slots are a permutation of source slots; temporary names
+  # avoid name collisions when two adjacent machines exchange places.
+  try{
+   foreach($badge in $shapes){$badge.shape.Name='ExcelDaily_Tmp_'+[guid]::NewGuid().ToString('N')}
+   foreach($move in $moving){
+    $source=$snap[[int]$move.item.row]
+    $row=[int]$move.destination
+    foreach($col in $columns){
+     $cell=ExcelCell $sheet $col $row
+     $v=$source[$col]
+     $cell.Value2=$v.value
+     $range=$cell
+     if($cell.MergeCells){$range=$cell.MergeArea}
+     if($col -eq $machineCol){$range.HorizontalAlignment=$v.alignment}
+     if($colorColumns -contains $col){
+      $range.Interior.Color=$v.background
+      $range.Interior.Pattern=$v.pattern
+      $range.Font.Color=$v.foreground
+     }
+    }
+   }
+   foreach($badge in $shapes){
+    $target=ExcelCell $sheet $machineCol $badge.destination
+    if($target.MergeCells){$target=$target.MergeArea}
+    $badge.shape.Left=[double]$target.Left+$badge.dx
+    $badge.shape.Top=[double]$target.Top+$badge.dy
+    $badge.shape.Name="ExcelDaily_$($badge.tag)Badge_${machineCol}_$($badge.destination)"
+   }
+  }catch{
+   $failure=$_
+   # Best-effort rollback to the post-time-update values and original badges.
+   foreach($badge in $shapes){try{$badge.shape.Name='ExcelDaily_Tmp_'+[guid]::NewGuid().ToString('N')}catch{}}
+   foreach($row in $snap.Keys){
+    foreach($col in $columns){
+     try{
+      $cell=ExcelCell $sheet $col $row;$v=$snap[$row][$col];$cell.Value2=$v.value
+      $range=$cell;if($cell.MergeCells){$range=$cell.MergeArea}
+      if($col -eq $machineCol){$range.HorizontalAlignment=$v.alignment}
+      if($colorColumns -contains $col){$range.Interior.Color=$v.background;$range.Interior.Pattern=$v.pattern;$range.Font.Color=$v.foreground}
+     }catch{}
+    }
+   }
+   foreach($badge in $shapes){try{$badge.shape.Left=$badge.left;$badge.shape.Top=$badge.top;$badge.shape.Name=$badge.name}catch{}}
+   throw "予定の並べ替えに失敗しました。保存せずにシートを確認してください: $($failure.Exception.Message)"
+  }
+  foreach($move in $moving){
+   $state[$move.item.key]=@{row=[int]$move.destination;scheduled_at=[string]$move.item.scheduled_at}
+   $moves++
+  }
+ }
+ $script:ReorderedCount=$moves
+}
+
 $cfg = Get-Content -LiteralPath $Settings -Raw -Encoding UTF8 | ConvertFrom-Json
 if(-not [string]::IsNullOrWhiteSpace($WorksheetName)){
     if([string]::IsNullOrWhiteSpace($WorkbookFullName)){
@@ -423,6 +553,20 @@ $started=[DateTime]::UtcNow
 $colored=0
 $nextSlot=@{mold=0;color=0}
 $script:DryingBadgeCount=0
+$script:ReorderedCount=0
+$pendingOrder=@()
+# Existing state must identify a slot uniquely before it may move.
+$rowOwners=@{}
+foreach($mapping in $state.GetEnumerator()){
+ foreach($k in @('mold','color')){
+  $prefix="$($book.FullName)|$($sheet.Name)|$k|"
+  if(([string]$mapping.Key).StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase) -and $mapping.Value.row){
+   $slot="$k|$([int]$mapping.Value.row)"
+   if(!$rowOwners.ContainsKey($slot)){$rowOwners[$slot]=0}
+   $rowOwners[$slot]++
+  }
+ }
+}
 $screenChanged=$false;$eventsChanged=$false
 if($fastWrites){
  try{$oldScreen=[bool]$excel.ScreenUpdating;$excel.ScreenUpdating=$false;$screenChanged=$true}catch{}
@@ -471,6 +615,9 @@ foreach ($e in $ordered) {
             }
             if (-not $TimeOnly -and $kind -eq 'color') { RepairColorIfBroken $sheet $cfg $e $row }
             $state[$key] = @{row=$row; scheduled_at=[string]$e.scheduled_at}
+            if($TimeOnly -and !$carryover -and $when -gt $now -and $rowOwners["$kind|$row"] -eq 1){
+                $pendingOrder+=@{kind=$kind;row=$row;key=$key;when=$when;scheduled_at=[string]$e.scheduled_at}
+            }
             continue
         }
         # The user edited/deleted a previously tracked row. Do not overwrite it.
@@ -534,6 +681,7 @@ foreach ($e in $ordered) {
     $state[$key] = @{row=$emptyRow; scheduled_at=[string]$e.scheduled_at}
     $added++
 }
+if($TimeOnly){MovePendingScheduleOrder $sheet $cfg $state @($pendingOrder)}
 RemoveUnusedScheduleBadges $sheet ([string]$cfg.columns.mold_machine) $start $step $count
 RemoveUnusedScheduleBadges $sheet ([string]$cfg.columns.color_machine) $start $step $count
 # Save only our local row-ID state. The open Excel workbook remains unsaved.
@@ -543,7 +691,7 @@ if ($cfg.update_policy.save_automatically -eq $true) {
     $book.Save()
 }
 $elapsed=[int]([DateTime]::UtcNow-$started).TotalMilliseconds
-Write-Output "date_offset=$DateOffset; shift=$Shift; Workbook=$($book.Name); sheet=$($sheet.Name); added=$added; updated_times=$changed; colored_cells=$colored; preserved=$kept; drying_badges=$script:DryingBadgeCount; elapsed_ms=$elapsed; excel_saved=$($cfg.update_policy.save_automatically)"
+Write-Output "date_offset=$DateOffset; shift=$Shift; Workbook=$($book.Name); sheet=$($sheet.Name); added=$added; updated_times=$changed; colored_cells=$colored; preserved=$kept; drying_badges=$script:DryingBadgeCount; reordered=$script:ReorderedCount; elapsed_ms=$elapsed; excel_saved=$($cfg.update_policy.save_automatically)"
 } finally {
  if($eventsChanged){try{$excel.EnableEvents=$oldEvents}catch{}}
  if($screenChanged){try{$excel.ScreenUpdating=$oldScreen}catch{}}
