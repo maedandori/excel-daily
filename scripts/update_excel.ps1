@@ -453,7 +453,7 @@ function PlanPendingScheduleOrder([object[]]$pending){
   # Normalize hashtables to explicit objects before PowerShell 5.1 sorting.
   $items=@(foreach($p in $pending){
    if([string]$p.kind -eq $kind){
-    [pscustomobject]@{kind=$kind;row=[int]$p.row;key=[string]$p.key;when=[datetime]$p.when;scheduled_at=[string]$p.scheduled_at}
+    [pscustomobject]@{kind=$kind;row=[int]$p.row;key=[string]$p.key;when=[datetime]$p.when;scheduled_at=[string]$p.scheduled_at;prefix=[string]$p.prefix}
    }
   })
   if($items.Count -lt 2){continue}
@@ -572,10 +572,18 @@ function MovePendingScheduleOrder($sheet,$cfg,$state,[object[]]$pending){
    foreach($badge in $shapes){try{$badge.shape.Left=$badge.left;$badge.shape.Top=$badge.top;$badge.shape.Name=$badge.name}catch{}}
    throw "予定の並べ替えに失敗しました。保存せずにシートを確認してください: $($failure.Exception.Message)"
   }
-  foreach($move in $moving){
-   $state[$move.item.key]=@{row=[int]$move.destination;scheduled_at=[string]$move.item.scheduled_at}
-   $moves++
+  # Remap existing identities using original rows, without assigning IDs to manual rows.
+  $rowMap=@{}
+  foreach($move in $moving){$rowMap[[int]$move.item.row]=[int]$move.destination}
+  $prefix=[string]$moving[0].item.prefix
+  foreach($key in @($state.Keys)){
+   if(!$prefix -or !([string]$key).StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)){continue}
+   $old=$state[$key]
+   if($old.row -and $rowMap.ContainsKey([int]$old.row)){
+    $old.row=$rowMap[[int]$old.row]
+   }
   }
+  $moves+=$moving.Count
  }
  $script:ReorderedCount=$moves
 }
@@ -640,19 +648,6 @@ $colored=0
 $nextSlot=@{mold=0;color=0}
 $script:DryingBadgeCount=0
 $script:ReorderedCount=0
-$pendingOrder=@()
-# Existing state must identify a slot uniquely before it may move.
-$rowOwners=@{}
-foreach($mapping in $state.GetEnumerator()){
- foreach($k in @('mold','color')){
-  $prefix="$($book.FullName)|$($sheet.Name)|$k|"
-  if(([string]$mapping.Key).StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase) -and $mapping.Value.row){
-   $slot="$k|$([int]$mapping.Value.row)"
-   if(!$rowOwners.ContainsKey($slot)){$rowOwners[$slot]=0}
-   $rowOwners[$slot]++
-  }
- }
-}
 $screenChanged=$false;$eventsChanged=$false
 if($fastWrites){
  try{$oldScreen=[bool]$excel.ScreenUpdating;$excel.ScreenUpdating=$false;$screenChanged=$true}catch{}
@@ -700,9 +695,6 @@ foreach ($e in $ordered) {
             }
             if (-not $TimeOnly -and $kind -eq 'color') { RepairColorIfBroken $sheet $cfg $e $row }
             $state[$key] = @{row=$row; scheduled_at=[string]$e.scheduled_at}
-            if($TimeOnly -and !$carryover -and $when -gt $now -and $rowOwners["$kind|$row"] -eq 1){
-                $pendingOrder+=[pscustomobject]@{kind=$kind;row=$row;key=$key;when=$when;scheduled_at=[string]$e.scheduled_at}
-            }
             continue
         }
         # Recover the actual row instead of overwriting an operator's edit.
@@ -730,9 +722,6 @@ foreach ($e in $ordered) {
         }
         if($canUpdate -or $past){
             SetScheduleRowIdentity $state $key $prefix $adopt ([string]$e.scheduled_at)
-        }
-        if($TimeOnly -and $canUpdate -and !$carryover -and $when -gt $now){
-            $pendingOrder+=[pscustomobject]@{kind=$kind;row=$adopt;key=$key;when=$when;scheduled_at=[string]$e.scheduled_at}
         }
         $kept++
         continue
@@ -773,7 +762,9 @@ foreach ($e in $ordered) {
     $state[$key] = @{row=$emptyRow; scheduled_at=[string]$e.scheduled_at}
     $added++
 }
-if($TimeOnly){MovePendingScheduleOrder $sheet $cfg $state @($pendingOrder)}
+$shiftDate=[datetime]::ParseExact((ShiftDate $Shift $DateOffset $now),'yyyy-MM-dd',[Globalization.CultureInfo]::InvariantCulture)
+$visiblePending=@(GetVisiblePendingSchedule $sheet $cfg $state $book $start $step $count $shiftDate $Shift $now @($ordered))
+MovePendingScheduleOrder $sheet $cfg $state $visiblePending
 RemoveUnusedScheduleBadges $sheet ([string]$cfg.columns.mold_machine) $start $step $count
 RemoveUnusedScheduleBadges $sheet ([string]$cfg.columns.color_machine) $start $step $count
 # Save only our local row-ID state. The open Excel workbook remains unsaved.
