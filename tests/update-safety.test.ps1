@@ -19,5 +19,27 @@ try{
  if($apply -notmatch 'ROLLBACK_FAILED' -or $apply -notmatch 'UPDATE_DEFERRED'){throw 'Installer needs rollback and deferral paths'}
  $cfg=Get-Content (Join-Path $PSScriptRoot '..\settings.json') -Raw -Encoding UTF8|ConvertFrom-Json
  if($cfg.auto_update.enabled -ne $true -or [int]$cfg.auto_update.check_interval_hours -ne 6){throw 'Automatic update defaults unexpectedly changed'}
+
+ $stage=Join-Path $dir 'stage'
+ New-Item -ItemType Directory -Path $stage -Force|Out-Null
+ $names=@('ExcelDailyRibbon.xll','ExcelDailyRibbon64.xll')
+ $meta=@{revision=('a'*40);files=@{}}
+ foreach($name in $names){
+  [IO.File]::WriteAllText((Join-Path $stage $name),'original '+$name)
+  Copy-Item (Join-Path $stage $name) (Join-Path $dir $name)
+  $meta.files[$name]=(Get-FileHash -Algorithm SHA256 (Join-Path $stage $name)).Hash
+ }
+ $meta|ConvertTo-Json -Depth 4|Set-Content (Join-Path $stage 'ribbon-version.json') -Encoding UTF8
+ if((Get-ExcelDailyRibbonPlan -Root $dir -Stage $stage).reason -ne 'same_hash'){throw 'Identical XLLs must be skipped'}
+ Copy-Item (Join-Path $stage 'ribbon-version.json') (Join-Path $dir 'ribbon-version.json')
+ foreach($name in $names){
+  [IO.File]::WriteAllText((Join-Path $stage $name),'rebuilt '+$name)
+  $meta.files[$name]=(Get-FileHash -Algorithm SHA256 (Join-Path $stage $name)).Hash
+ }
+ $meta|ConvertTo-Json -Depth 4|Set-Content (Join-Path $stage 'ribbon-version.json') -Encoding UTF8
+ if((Get-ExcelDailyRibbonPlan -Root $dir -Stage $stage).replace){throw 'Same source revision must not replace rebuilt XLL'}
+ $meta.revision=('b'*40)
+ $meta|ConvertTo-Json -Depth 4|Set-Content (Join-Path $stage 'ribbon-version.json') -Encoding UTF8
+ if(!(Get-ExcelDailyRibbonPlan -Root $dir -Stage $stage).replace){throw 'Changed revision must replace XLL'}
  Write-Output 'UPDATE_SAFETY_TESTS_OK'
 }finally{Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue}

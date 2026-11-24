@@ -22,5 +22,58 @@ function Complete-ExcelDailyPendingRibbon {
    Remove-Item -LiteralPath $pending -Force -ErrorAction Stop
   }catch{return $false}
  }
+ # Only publish the revision after both pending binaries are installed and verified.
+ $manifest=Join-Path $Root 'ribbon-version.json.pending'
+ if(Test-Path -LiteralPath $manifest){
+  try{
+   $meta=Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
+   foreach($name in @('ExcelDailyRibbon.xll','ExcelDailyRibbon64.xll')){
+    if((Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $Root $name)).Hash -ine [string]$meta.files.PSObject.Properties[$name].Value){return $false}
+   }
+   Copy-Item -LiteralPath $manifest -Destination (Join-Path $Root 'ribbon-version.json') -Force -ErrorAction Stop
+   Remove-Item -LiteralPath $manifest -Force -ErrorAction Stop
+  }catch{return $false}
+ }
  return $true
+}
+
+function Get-ExcelDailyRibbonPlan {
+ param([Parameter(Mandatory=$true)][string]$Root,[Parameter(Mandatory=$true)][string]$Stage)
+ $names=@('ExcelDailyRibbon.xll','ExcelDailyRibbon64.xll')
+ $incoming=$null
+ $manifest=Join-Path $Stage 'ribbon-version.json'
+ if(Test-Path -LiteralPath $manifest){
+  $incoming=Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
+  if([string]$incoming.revision -notmatch '^[a-f0-9]{40}$'){throw 'Invalid Ribbon revision'}
+  foreach($name in $names){
+   $expected=[string]$incoming.files.PSObject.Properties[$name].Value
+   if($expected -notmatch '^[a-f0-9]{64}$' -or (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $Stage $name)).Hash -ine $expected){throw 'Ribbon checksum mismatch'}
+  }
+ }
+ # Prefer a complete already-staged pair; never trust revision alone if files are missing or corrupt.
+ $pendingManifest=Join-Path $Root 'ribbon-version.json.pending'
+ $installedManifest=Join-Path $Root 'ribbon-version.json'
+ foreach($candidate in @(@{path=$pendingManifest;suffix='.pending'},@{path=$installedManifest;suffix=''})){
+  if(!$incoming -or !(Test-Path -LiteralPath $candidate.path)){continue}
+  try{
+   $current=Get-Content -LiteralPath $candidate.path -Raw -Encoding UTF8 | ConvertFrom-Json
+   if($current.revision -ne $incoming.revision){continue}
+   # An installed revision cannot override an unrelated staged upgrade.
+   if(!$candidate.suffix -and @($names|Where-Object{Test-Path -LiteralPath (Join-Path $Root ($_+'.pending'))}).Count){continue}
+   $valid=$true
+   foreach($name in $names){
+    $actualPath=Join-Path $Root ($name+$candidate.suffix)
+    if(!(Test-Path -LiteralPath $actualPath) -or (Get-FileHash -Algorithm SHA256 -LiteralPath $actualPath).Hash -ine [string]$current.files.PSObject.Properties[$name].Value){$valid=$false;break}
+   }
+   if($valid){return @{replace=$false;reason='same_revision'}}
+  }catch{}
+ }
+ $same=$true
+ foreach($name in $names){
+  $actualPath=Join-Path $Root $name
+  if((Test-Path -LiteralPath ($actualPath+'.pending')) -or !(Test-Path -LiteralPath $actualPath) -or
+      (Get-FileHash -Algorithm SHA256 -LiteralPath $actualPath).Hash -ine (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $Stage $name)).Hash){$same=$false;break}
+ }
+ if($same){return @{replace=$false;reason='same_hash'}}
+ return @{replace=$true;reason='changed_or_untracked'}
 }

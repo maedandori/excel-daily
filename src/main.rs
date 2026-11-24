@@ -272,7 +272,8 @@ fn main() -> anyhow::Result<()> {
     let pending_dir=dir.clone();
     thread::spawn(move || loop {
         if pending_dir.join("ExcelDailyRibbon.xll.pending").exists() ||
-           pending_dir.join("ExcelDailyRibbon64.xll.pending").exists() {
+           pending_dir.join("ExcelDailyRibbon64.xll.pending").exists() ||
+           pending_dir.join("ribbon-version.json.pending").exists() {
             let _=Command::new("powershell.exe")
                 .args(["-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-Command"])
                 .arg("$ErrorActionPreference='Stop'; . (Join-Path (Get-Location) 'update_safety.ps1'); $null=Complete-ExcelDailyPendingRibbon -Root (Get-Location).Path")

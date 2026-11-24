@@ -76,7 +76,11 @@ try {
  $copyStarted=$true
  # Keep the running Excel session intact. Stage XLLs separately if loaded.
  $ribbonPending=$false
+ $ribbonManifest=Join-Path $stage 'ribbon-version.json'
+ $ribbonPlan=Get-ExcelDailyRibbonPlan -Root $dir -Stage $stage
+ Log ('RIBBON_PLAN '+$ribbonPlan.reason)
  foreach($name in $required){
+  if($name -like '*.xll' -and -not $ribbonPlan.replace){continue}
   # Always stage XLLs; the agent can run with the previous compatible Ribbon.
   # This also avoids a race when Excel starts during installation.
   $destName=if($name -like '*.xll'){$ribbonPending=$true;$name+'.pending'}else{$name}
@@ -86,10 +90,27 @@ try {
   $copied+=@{path=$dst;name=$destName;hadOld=$hadOld}
   Copy-Item -LiteralPath (Join-Path $stage $name) -Destination $dst -Force -ErrorAction Stop
  }
+ if($ribbonPlan.replace -and (Test-Path -LiteralPath $ribbonManifest)){
+  $name='ribbon-version.json.pending'
+  $dst=Join-Path $dir $name
+  $hadOld=Test-Path -LiteralPath $dst
+  if($hadOld){Copy-Item -LiteralPath $dst -Destination (Join-Path $backup $name) -Force -ErrorAction Stop}
+  $copied+=@{path=$dst;name=$name;hadOld=$hadOld}
+  Copy-Item -LiteralPath $ribbonManifest -Destination $dst -Force -ErrorAction Stop
+ } elseif($ribbonPlan.reason -eq 'same_hash' -and (Test-Path -LiteralPath $ribbonManifest)){
+  $name='ribbon-version.json'
+  $dst=Join-Path $dir $name
+  $hadOld=Test-Path -LiteralPath $dst
+  if($hadOld){Copy-Item -LiteralPath $dst -Destination (Join-Path $backup $name) -Force -ErrorAction Stop}
+  $copied+=@{path=$dst;name=$name;hadOld=$hadOld}
+  Copy-Item -LiteralPath $ribbonManifest -Destination $dst -Force -ErrorAction Stop
+ }
  $id=RestartAgent
  $stopped=$false
  Log ('UPDATE_SUCCESS version='+$TargetVersion+' pid='+$id)
- UpdateStatus 'success' ('更新が完了しました。バージョン '+$TargetVersion+'。Excel Dailyを再起動しました。リボンはExcel終了後に更新します。')
+ $message='更新が完了しました。バージョン '+$TargetVersion+'。Excel Dailyを再起動しました。'
+ if($ribbonPending){$message+='リボンはExcel終了後に更新します。'}else{$message+='リボンの更新は不要です。'}
+ UpdateStatus 'success' $message
 }catch{
  Log ('UPDATE_FAILED '+$_.Exception.Message)
  if($copyStarted){
