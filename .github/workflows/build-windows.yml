@@ -14,6 +14,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'build.rs'
+      - 'branding/**'
       - 'settings.json'
       - 'README.md'
       - '.github/workflows/build-windows.yml'
