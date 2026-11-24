@@ -393,8 +393,395 @@ function SetScheduleRowIdentity($state,[string]$key,[string]$prefix,[int]$row,[s
     $state[$key]=@{row=$row;scheduled_at=$scheduledAt}
 }
 
-# Sort only the slots belonging to known, pending events. Completed, manual,
-# carryover and untracked slots are never destination rows.
+# Derive chronological order from the visible sheet after refreshing times.
+# A night shift crosses midnight; 18:30 is the earliest normal lookback slot.
+function VisibleScheduleDate([string]$time,[datetime]$date,[string]$shift){
+ if($time -notmatch '^([01]?\d|2[0-3]):([0-5]\d)
+function PlanPendingScheduleOrder([object[]]$pending){
+ foreach($kind in @('mold','color')){
+  # Normalize hashtables to explicit objects before PowerShell 5.1 sorting.
+  $items=@(foreach($p in $pending){
+   if([string]$p.kind -eq $kind){
+    [pscustomobject]@{kind=$kind;row=[int]$p.row;key=[string]$p.key;when=[datetime]$p.when;scheduled_at=[string]$p.scheduled_at;prefix=[string]$p.prefix}
+   }
+  })
+  if($items.Count -lt 2){continue}
+  $slots=@($items | ForEach-Object{[int]$_.row} | Sort-Object -Unique)
+  if($slots.Count -ne $items.Count){continue}
+  $ordered=@($items | Sort-Object -Property @{Expression={$_.when};Ascending=$true},@{Expression={$_.row};Ascending=$true})
+  for($i=0;$i -lt $slots.Count;$i++){
+   [pscustomobject]@{item=$ordered[$i];destination=[int]$slots[$i]}
+  }
+ }
+}
+# Move the existing managed Shapes, not unrelated worksheet objects.
+function MovePendingScheduleOrder($sheet,$cfg,$state,[object[]]$pending){
+ $moves=0
+ foreach($kind in @('mold','color')){
+  $plan=@(PlanPendingScheduleOrder @($pending|Where-Object{$_.kind -eq $kind}))
+  $moving=@($plan|Where-Object{[int]$_.item.row -ne [int]$_.destination})
+  if(!$moving.Count){continue}
+  $machineCol=if($kind -eq 'mold'){[string]$cfg.columns.mold_machine}else{[string]$cfg.columns.color_machine}
+  $timeCol=if($kind -eq 'mold'){[string]$cfg.columns.mold_time}else{[string]$cfg.columns.color_time}
+  $columns=@($machineCol,$timeCol)
+  $colorColumns=@()
+  if($kind -eq 'color'){
+   $colorColumns=@([string]$cfg.columns.color_before,[string]$cfg.columns.color_after)
+   $columns+=@($colorColumns)
+  }
+  if(@($columns|Where-Object{!$_}).Count -or @($columns|Select-Object -Unique).Count -ne $columns.Count){continue}
+  $markers=@{Color='ExcelDaily managed color badge';Stamp='ExcelDaily managed stamp badge';Drying='ExcelDaily managed drying badge'}
+  $snap=@{}
+  $shapes=@()
+  $addresses=@{}
+  $blocked=$false
+  # Stage every source before overwriting a single cell. Preserve number formats,
+  # borders and merged-cell layout. Only transfer values and event-specific colors.
+  foreach($move in $moving){
+   $row=[int]$move.item.row
+   $cells=@{}
+   foreach($col in $columns){
+    $cell=ExcelCell $sheet $col $row
+    $address="$($cell.Row):$($cell.Column)"
+    if($addresses.ContainsKey($address) -or $cell.HasFormula -or ($sheet.ProtectContents -and $cell.Locked)){
+     $blocked=$true;break
+    }
+    $addresses[$address]=$true
+    $entry=@{value=$cell.Value2}
+    $range=$cell
+    if($cell.MergeCells){$range=$cell.MergeArea}
+    if($col -eq $machineCol){$entry.alignment=$range.HorizontalAlignment}
+    if($colorColumns -contains $col){
+     $entry.pattern=$range.Interior.Pattern
+     $entry.background=$range.Interior.Color
+     $entry.foreground=$range.Font.Color
+    }
+    $cells[$col]=$entry
+   }
+   if($blocked){break}
+   $snap[$row]=$cells
+   $machineCell=ExcelCell $sheet $machineCol $row
+   if($machineCell.MergeCells){$machineCell=$machineCell.MergeArea}
+   foreach($tag in $markers.Keys){
+    $name="ExcelDaily_${tag}Badge_${machineCol}_${row}"
+    $shape=$null
+    try{$shape=$sheet.Shapes.Item($name)}catch{}
+    if($null -eq $shape){continue}
+    if($shape.AlternativeText -ne $markers[$tag] -or $sheet.ProtectDrawingObjects){$blocked=$true;break}
+    $shapes+=@{shape=$shape;name=$name;tag=$tag;row=$row;destination=[int]$move.destination;
+      left=[double]$shape.Left;top=[double]$shape.Top;
+      dx=([double]$shape.Left-[double]$machineCell.Left);dy=([double]$shape.Top-[double]$machineCell.Top);
+      width=[double]$shape.Width;height=[double]$shape.Height}
+   }
+   if($blocked){break}
+  }
+  if($blocked){Write-Output "並べ替え対象に保護セル・数式・未管理マークがあります: $kind";continue}
+  # Destination slots are a permutation of source slots; temporary names
+  # avoid name collisions when two adjacent machines exchange places.
+  try{
+   foreach($badge in $shapes){$badge.shape.Name='ExcelDaily_Tmp_'+[guid]::NewGuid().ToString('N')}
+   foreach($move in $moving){
+    $source=$snap[[int]$move.item.row]
+    $row=[int]$move.destination
+    foreach($col in $columns){
+     $cell=ExcelCell $sheet $col $row
+     $v=$source[$col]
+     $cell.Value2=$v.value
+     $range=$cell
+     if($cell.MergeCells){$range=$cell.MergeArea}
+     if($col -eq $machineCol){$range.HorizontalAlignment=$v.alignment}
+     if($colorColumns -contains $col){
+      $range.Interior.Color=$v.background
+      $range.Interior.Pattern=$v.pattern
+      $range.Font.Color=$v.foreground
+     }
+    }
+   }
+   foreach($badge in $shapes){
+    $target=ExcelCell $sheet $machineCol $badge.destination
+    if($target.MergeCells){$target=$target.MergeArea}
+    $badge.shape.Left=[double]$target.Left+$badge.dx
+    $badge.shape.Top=[double]$target.Top+$badge.dy
+    $badge.shape.Name="ExcelDaily_$($badge.tag)Badge_${machineCol}_$($badge.destination)"
+   }
+  }catch{
+   $failure=$_
+   # Best-effort rollback to the post-time-update values and original badges.
+   foreach($badge in $shapes){try{$badge.shape.Name='ExcelDaily_Tmp_'+[guid]::NewGuid().ToString('N')}catch{}}
+   foreach($row in $snap.Keys){
+    foreach($col in $columns){
+     try{
+      $cell=ExcelCell $sheet $col $row;$v=$snap[$row][$col];$cell.Value2=$v.value
+      $range=$cell;if($cell.MergeCells){$range=$cell.MergeArea}
+      if($col -eq $machineCol){$range.HorizontalAlignment=$v.alignment}
+      if($colorColumns -contains $col){$range.Interior.Color=$v.background;$range.Interior.Pattern=$v.pattern;$range.Font.Color=$v.foreground}
+     }catch{}
+    }
+   }
+   foreach($badge in $shapes){try{$badge.shape.Left=$badge.left;$badge.shape.Top=$badge.top;$badge.shape.Name=$badge.name}catch{}}
+   throw "予定の並べ替えに失敗しました。保存せずにシートを確認してください: $($failure.Exception.Message)"
+  }
+  # Rebind every existing ID for this table by its original row, in one pass.
+  # Untracked rows can move without creating a synthetic ID or new entry.
+  $rowMap=@{}
+  foreach($move in $moving){$rowMap[[int]$move.item.row]=[int]$move.destination}
+  $prefix=[string]$moving[0].item.prefix
+  foreach($key in @($state.Keys)){
+   if(!$prefix -or !([string]$key).StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)){continue}
+   $old=$state[$key]
+   if($old.row -and $rowMap.ContainsKey([int]$old.row)){
+    $old.row=$rowMap[[int]$old.row]
+   }
+  }
+  $moves+=$moving.Count
+ }
+ $script:ReorderedCount=$moves
+}
+
+$cfg = Get-Content -LiteralPath $Settings -Raw -Encoding UTF8 | ConvertFrom-Json
+if(-not [string]::IsNullOrWhiteSpace($WorksheetName)){
+    if([string]::IsNullOrWhiteSpace($WorkbookFullName)){
+        throw 'シートを指定する場合は更新対象のExcelファイルも指定してください。'
+    }
+    if($Shift -ne 'auto'){
+        throw 'シートを指定する場合はShift=autoを使用してください。'
+    }
+    $Shift=ResolveShiftForSheet $cfg $WorksheetName
+}elseif($Shift -eq 'auto'){
+    throw '更新するシートが指定されていません。'
+}
+$script:ColorCellsEnabled=($null -eq $cfg.formatting -or $cfg.formatting.color_cells -ne $false)
+$fastWrites=($null -eq $cfg.formatting -or $cfg.formatting.fast_excel_writes -ne $false)
+$baseDir = Split-Path -Parent $Settings
+$events = @(FetchEvents $cfg $baseDir $Shift $DateOffset)
+# Validate entire input before touching Excel.
+$usable = @()
+foreach ($e in $events) {
+    if ([string]$e.shift -ne $Shift) { continue }
+    # A carried-over event must explicitly target this shift. It retains its
+    # stable event ID and original timestamp, despite the previous shift date.
+    if ([string]$e.kind -notin @("mold","color")) { throw "予定種別が正しくありません: $($e.kind)" }
+    if (-not $e.id -or -not $e.machine -or -not $e.scheduled_at) {
+        throw "予定にはid、machine、scheduled_atが必要です。"
+    }
+    $null = EventTime $e
+    $usable += $e
+}
+$excel = [Runtime.InteropServices.Marshal]::GetActiveObject("Excel.Application")
+if ($null -eq $excel) { throw "Excelが起動していません。" }
+$book = PickWorkbook $excel $cfg $WorkbookFullName
+$sheetName = if (-not [string]::IsNullOrWhiteSpace($WorksheetName)) {
+    $WorksheetName
+} elseif ($Shift -eq "day") { [string]$cfg.sheets.day } else { [string]$cfg.sheets.night }
+$sheet = if (-not [string]::IsNullOrWhiteSpace($WorksheetName)) {
+    PickSheetExactly $book $sheetName
+} else {
+    PickSheet $book $sheetName
+}
+$start = if ($Shift -eq "day") { [int]$cfg.rows.day_start } else { [int]$cfg.rows.night_start }
+$step = [int]$cfg.rows.step
+$count = [int]$cfg.rows.max_entries
+if ($step -lt 1 -or $count -lt 1 -or $count -gt 100) { throw "行の設定が正しくありません。" }
+$metadataPath = Join-Path $baseDir "excel-daily-state.json"
+$state = @{}
+if (Test-Path -LiteralPath $metadataPath) {
+    $loaded = Get-Content -LiteralPath $metadataPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($loaded) { foreach ($p in $loaded.PSObject.Properties) { $state[$p.Name] = $p.Value } }
+}
+$changed = 0
+$added = 0
+$kept = 0
+$now = [DateTime]::Now
+$ordered = @($usable | Sort-Object scheduled_at)
+$started=[DateTime]::UtcNow
+$colored=0
+$nextSlot=@{mold=0;color=0}
+$script:DryingBadgeCount=0
+$script:ReorderedCount=0
+$screenChanged=$false;$eventsChanged=$false
+if($fastWrites){
+ try{$oldScreen=[bool]$excel.ScreenUpdating;$excel.ScreenUpdating=$false;$screenChanged=$true}catch{}
+ try{$oldEvents=[bool]$excel.EnableEvents;$excel.EnableEvents=$false;$eventsChanged=$true}catch{}
+}
+try {
+foreach ($e in $ordered) {
+    $kind = [string]$e.kind
+    $machine = [string]$e.machine
+    $id = [string]$e.id
+    $key = "$($book.FullName)|$($sheet.Name)|$kind|$id"
+    $machineCol = if ($kind -eq "mold") { [string]$cfg.columns.mold_machine } else { [string]$cfg.columns.color_machine }
+    $timeCol = if ($kind -eq "mold") { [string]$cfg.columns.mold_time } else { [string]$cfg.columns.color_time }
+    $when = [DateTime]::Parse([string]$e.scheduled_at, [System.Globalization.CultureInfo]::InvariantCulture)
+    $completed = ($e.completed -eq $true)
+    $handoverStatuses = @('100','410','440','490')
+    $carryover = ($e.carryover -eq $true) -and
+        ($handoverStatuses -contains ([string]$e.status_code)) -and (-not $completed)
+    $past = (($when -le $now) -and (-not $carryover)) -or $completed
+    $previous = $state[$key]
+    $prefix="$($book.FullName)|$($sheet.Name)|$kind|"
+    if ($previous) {
+        $row = [int]$previous.row
+        if ($row -lt $start -or (($row-$start) % $step) -ne 0 -or
+            $row -ge ($start + $count*$step)) {
+            $state.Remove($key)
+            $previous = $null
+        }
+    }
+    if ($previous) {
+        $row = [int]$previous.row
+        $previousMachine = CellValue $sheet $machineCol $row
+        if ((MachineId $previousMachine) -eq (MachineId $machine)) {
+            if(-not $TimeOnly){SetScheduleBadges $sheet $machineCol $row $e $cfg}
+            if ($past -or ([bool]$cfg.update_policy.preserve_past -and (-not $carryover) -and
+                $previous.scheduled_at -and ([DateTime]::Parse([string]$previous.scheduled_at) -le $now))) {
+                if (-not $TimeOnly -and $kind -eq 'color') { RepairColorIfBroken $sheet $cfg $e $row }
+                $kept++
+                continue
+            }
+            $newTime = EventTime $e
+            if ((ExcelTimeText $sheet $timeCol $row) -ne ([TimeSpan]::Parse($newTime)).ToString('hh\:mm')) {
+                PutValue $sheet $timeCol $row $newTime
+                $changed++
+            }
+            if (-not $TimeOnly -and $kind -eq 'color') { RepairColorIfBroken $sheet $cfg $e $row }
+            $state[$key] = @{row=$row; scheduled_at=[string]$e.scheduled_at}
+            continue
+        }
+        # Recover the actual row instead of overwriting an operator's edit.
+        $state.Remove($key)
+    }
+    # If this same machine/change is already in the Excel sheet, only refresh
+    # the time cell. Don't create a duplicate when the local ID mapping was lost.
+    $adopt=FindExistingSlot $sheet $cfg $e $state $book $start $step $count $ordered $now $when $carryover
+    if($adopt -lt 0) {
+        Write-Output "対応する行を特定できません: 種別=$kind / 設備=$machine / 予定=$id。変更しません。"
+        $kept++
+        continue
+    }
+    if($adopt -gt 0) {
+        SetScheduleBadges $sheet $machineCol $adopt $e $cfg
+        $oldTime=ExcelTimeText $sheet $timeCol $adopt
+        $canUpdate=(-not $past) -and ($carryover -or -not [bool]$cfg.update_policy.preserve_past -or (TimeStillPending $oldTime $when $now))
+        if($canUpdate) {
+            $newTime=EventTime $e
+            if($oldTime -ne ([TimeSpan]::Parse($newTime)).ToString('hh\:mm')) {
+                PutValue $sheet $timeCol $adopt $newTime
+                $changed++
+            }
+            if(-not $TimeOnly -and $kind -eq 'color'){RepairColorIfBroken $sheet $cfg $e $adopt}
+        }
+        if($canUpdate -or $past){
+            SetScheduleRowIdentity $state $key $prefix $adopt ([string]$e.scheduled_at)
+        }
+        $kept++
+        continue
+    }
+    # Time-only refresh can recover existing rows but never add a new one.
+    if($TimeOnly){$kept++;continue}
+    # Never append historical/completed work, except an explicitly active
+    # handover item with status 100/410/440/490 targeting this shift.
+    if ($past) { $kept++; continue }
+    $emptyRow = 0
+    for ($i=[int]$nextSlot[$kind]; $i -lt $count; $i++) {
+        $row = $start + ($i*$step)
+        if ((CellValue $sheet $machineCol $row) -eq "" -and (CellValue $sheet $timeCol $row) -eq "") {
+            $emptyRow = $row
+            $nextSlot[$kind]=$i+1
+            break
+        }
+    }
+    if ($emptyRow -eq 0) {
+        Write-Output "空き行がありません: 種別=$kind / 設備=$machine"
+        continue
+    }
+    PutValue $sheet $machineCol $emptyRow $machine
+    PutValue $sheet $timeCol $emptyRow (EventTime $e)
+    SetScheduleBadges $sheet $machineCol $emptyRow $e $cfg
+    if ($kind -eq "color") {
+        if ($e.color_before) {
+            $col=[string]$cfg.columns.color_before
+            PutValue $sheet $col $emptyRow ([string]$e.color_before)
+            if (PaintColorCell $sheet $col $emptyRow ([string]$e.color_before)) { $colored++ }
+        }
+        if ($e.color_after) {
+            $col=[string]$cfg.columns.color_after
+            PutValue $sheet $col $emptyRow ([string]$e.color_after)
+            if (PaintColorCell $sheet $col $emptyRow ([string]$e.color_after)) { $colored++ }
+        }
+    }
+    $state[$key] = @{row=$emptyRow; scheduled_at=[string]$e.scheduled_at}
+    $added++
+}
+$shiftDate=[datetime]::ParseExact((ShiftDate $Shift $DateOffset $now),'yyyy-MM-dd',[Globalization.CultureInfo]::InvariantCulture)
+$visiblePending=@(GetVisiblePendingSchedule $sheet $cfg $state $book $start $step $count $shiftDate $Shift $now @($ordered))
+MovePendingScheduleOrder $sheet $cfg $state $visiblePending
+RemoveUnusedScheduleBadges $sheet ([string]$cfg.columns.mold_machine) $start $step $count
+RemoveUnusedScheduleBadges $sheet ([string]$cfg.columns.color_machine) $start $step $count
+# Save only our local row-ID state. The open Excel workbook remains unsaved.
+$json = ConvertTo-Json -InputObject $state -Depth 5
+[System.IO.File]::WriteAllText($metadataPath, $json, (New-Object System.Text.UTF8Encoding($false)))
+if ($cfg.update_policy.save_automatically -eq $true) {
+    $book.Save()
+}
+$elapsed=[int]([DateTime]::UtcNow-$started).TotalMilliseconds
+Write-Output "date_offset=$DateOffset; shift=$Shift; Workbook=$($book.Name); sheet=$($sheet.Name); added=$added; updated_times=$changed; colored_cells=$colored; preserved=$kept; drying_badges=$script:DryingBadgeCount; reordered=$script:ReorderedCount; elapsed_ms=$elapsed; excel_saved=$($cfg.update_policy.save_automatically)"
+} finally {
+ if($eventsChanged){try{$excel.EnableEvents=$oldEvents}catch{}}
+ if($screenChanged){try{$excel.ScreenUpdating=$oldScreen}catch{}}
+ $script:ExcelCells.Clear()
+}
+){return $null}
+ $minutes=[int]$Matches[1]*60+[int]$Matches[2]
+ if($shift -eq 'night' -and $minutes -lt 1110){$minutes+=1440}
+ return $date.Date.AddMinutes($minutes)
+}
+function TestScheduleRowMarked($sheet,[string]$machineCol,[string]$timeCol,[int]$row){
+ # Protect font strikethrough and horizontal manual line/ink crossing the number.
+ foreach($column in @($machineCol,$timeCol)){
+  $cell=ExcelCell $sheet $column $row
+  if($cell.Font.Strikethrough -eq $true){return $true}
+ }
+ $cell=ExcelCell $sheet $machineCol $row
+ if($cell.MergeCells){$cell=$cell.MergeArea}
+ $cx=[double]$cell.Left+[double]$cell.Width/2
+ $cy=[double]$cell.Top+[double]$cell.Height/2
+ $tolerance=[double]$cell.Height*0.35
+ foreach($shape in $sheet.Shapes){
+  try{
+   if([string]$shape.AlternativeText -like 'ExcelDaily managed * badge'){continue}
+   $left=[double]$shape.Left;$top=[double]$shape.Top
+   $w=[double]$shape.Width;$h=[double]$shape.Height
+   if($w -ge [double]$cell.Width*0.5 -and $h -le [double]$cell.Height*0.8 -and
+     $left -le $cx -and ($left+$w) -ge $cx -and
+     $top -le ($cy+$tolerance) -and ($top+$h) -ge ($cy-$tolerance)){return $true}
+  }catch{}
+ }
+ return $false
+}
+function GetVisiblePendingSchedule($sheet,$cfg,$state,$book,[int]$start,[int]$step,[int]$count,[datetime]$date,[string]$shift,[datetime]$now,[object[]]$events){
+ foreach($kind in @('mold','color')){
+  $machineCol=if($kind -eq 'mold'){[string]$cfg.columns.mold_machine}else{[string]$cfg.columns.color_machine}
+  $timeCol=if($kind -eq 'mold'){[string]$cfg.columns.mold_time}else{[string]$cfg.columns.color_time}
+  $prefix="$($book.FullName)|$($sheet.Name)|$kind|"
+  $fixed=@{}
+  foreach($e in $events){
+   if([string]$e.kind -ne $kind -or ($e.completed -ne $true -and $e.carryover -ne $true)){continue}
+   $entry=$state[$prefix+[string]$e.id]
+   if($entry -and $entry.row){$fixed[[int]$entry.row]=$true}
+  }
+  for($i=0;$i -lt $count;$i++){
+   $row=$start+$i*$step
+   if($fixed.ContainsKey($row)){continue}
+   $machine=MachineId (CellValue $sheet $machineCol $row)
+   if(!$machine){continue}
+   $when=VisibleScheduleDate (ExcelTimeText $sheet $timeCol $row) $date $shift
+   if($null -eq $when -or $when -le $now){continue}
+   if(TestScheduleRowMarked $sheet $machineCol $timeCol $row){continue}
+   [pscustomobject]@{kind=$kind;row=$row;key='';when=$when;scheduled_at=$when.ToString('s');prefix=$prefix}
+  }
+ }
+}
+# Plan a permutation of only the unfinished visible rows.
 function PlanPendingScheduleOrder([object[]]$pending){
  foreach($kind in @('mold','color')){
   # Normalize hashtables to explicit objects before PowerShell 5.1 sorting.

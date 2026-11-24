@@ -91,3 +91,25 @@ if($null -ne (GetScheduleBadgeLayout 55 12 20 3)){throw 'Insufficient height mus
 if($source -notmatch '\$top\+=\$layout\.step'){throw 'Badge rendering must advance vertically'}
 if($source -match '\$left\+=\$width\+1'){throw 'Horizontal stacking must be removed'}
 Write-Output 'VERTICAL_BADGE_LAYOUT_TESTS_OK'
+
+# Regression from company screenshot: 23:20 (finished), 03:30, 04:50, 04:00.
+foreach($name in @('VisibleScheduleDate','GetVisiblePendingSchedule')){
+ $fn=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$true)
+ if(!$fn){throw "Missing $name"}
+ Invoke-Expression $fn.Extent.Text
+}
+function TestScheduleRowMarked($sheet,$machineCol,$timeCol,$row){return ($row -eq 15)}
+$sheet=@{Name='night';AR7='11';AS7='23:20';AR9='10';AS9='03:30';AR11='13';AS11='04:50';AR13='19';AS13='04:00';AR15='8';AS15='05:00'}
+$state=@{}
+$nightDate=[datetime]'2026-11-24'
+$now=[datetime]'2026-11-25T01:32:00'
+$visible=@(GetVisiblePendingSchedule $sheet $cfg $state $book 7 2 12 $nightDate 'night' $now @())
+if($visible.Count -ne 3){throw "Expected three unfinished rows, got $($visible.Count)"}
+$plan=@(PlanPendingScheduleOrder $visible)
+$sequence=($plan|ForEach-Object{$sheet["AR$($_.item.row)"]}) -join ','
+if($sequence -ne '10,19,13'){throw "Visible sheet order incorrect: $sequence"}
+if((($plan|ForEach-Object{$_.destination}) -join ',') -ne '9,11,13'){throw 'Finished and manually marked rows must not move'}
+if((VisibleScheduleDate '23:20' $nightDate 'night') -ne [datetime]'2026-11-24T23:20:00'){throw 'Night evening date wrong'}
+if((VisibleScheduleDate '04:00' $nightDate 'night') -ne [datetime]'2026-11-25T04:00:00'){throw 'Night morning date wrong'}
+if($source -notmatch '(?m)^MovePendingScheduleOrder \$sheet \$cfg \$state \$visiblePending'){throw 'Both refresh modes must sort visible rows'}
+Write-Output 'VISIBLE_SCHEDULE_ORDER_TESTS_OK'
