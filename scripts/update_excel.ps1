@@ -369,11 +369,16 @@ function FindExistingSlot($sheet,$cfg,$event,$state,$book,[int]$start,[int]$step
 # carryover and untracked slots are never destination rows.
 function PlanPendingScheduleOrder([object[]]$pending){
  foreach($kind in @('mold','color')){
-  $items=@($pending | Where-Object{$_.kind -eq $kind})
+  # Normalize hashtables to explicit objects before PowerShell 5.1 sorting.
+  $items=@(foreach($p in $pending){
+   if([string]$p.kind -eq $kind){
+    [pscustomobject]@{kind=$kind;row=[int]$p.row;key=[string]$p.key;when=[datetime]$p.when;scheduled_at=[string]$p.scheduled_at}
+   }
+  })
   if($items.Count -lt 2){continue}
   $slots=@($items | ForEach-Object{[int]$_.row} | Sort-Object -Unique)
   if($slots.Count -ne $items.Count){continue}
-  $ordered=@($items | Sort-Object @{Expression={[datetime]$_.when}},@{Expression={[int]$_.row}})
+  $ordered=@($items | Sort-Object -Property @{Expression={$_.when};Ascending=$true},@{Expression={$_.row};Ascending=$true})
   for($i=0;$i -lt $slots.Count;$i++){
    [pscustomobject]@{item=$ordered[$i];destination=[int]$slots[$i]}
   }
@@ -407,7 +412,7 @@ function MovePendingScheduleOrder($sheet,$cfg,$state,[object[]]$pending){
    $cells=@{}
    foreach($col in $columns){
     $cell=ExcelCell $sheet $col $row
-    $address=[string]$cell.Address()
+    $address="$($cell.Row):$($cell.Column)"
     if($addresses.ContainsKey($address) -or $cell.HasFormula -or ($sheet.ProtectContents -and $cell.Locked)){
      $blocked=$true;break
     }
@@ -616,7 +621,7 @@ foreach ($e in $ordered) {
             if (-not $TimeOnly -and $kind -eq 'color') { RepairColorIfBroken $sheet $cfg $e $row }
             $state[$key] = @{row=$row; scheduled_at=[string]$e.scheduled_at}
             if($TimeOnly -and !$carryover -and $when -gt $now -and $rowOwners["$kind|$row"] -eq 1){
-                $pendingOrder+=@{kind=$kind;row=$row;key=$key;when=$when;scheduled_at=[string]$e.scheduled_at}
+                $pendingOrder+=[pscustomobject]@{kind=$kind;row=$row;key=$key;when=$when;scheduled_at=[string]$e.scheduled_at}
             }
             continue
         }

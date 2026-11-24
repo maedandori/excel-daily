@@ -23,15 +23,17 @@ $pending=@(
 $plan=@(PlanPendingScheduleOrder $pending)
 if($plan.Count -ne 5){throw 'Expected five placements'}
 $colors=@($plan|Where-Object{$_.item.kind -eq 'color'})
-if(($colors.item.key -join ',') -ne '11,10,13'){throw 'Color order must follow updated time'}
-if(($colors.destination -join ',') -ne '9,11,15'){throw 'Fixed row 13 must remain untouched'}
+$actualColorOrder=($colors|ForEach-Object{$_.item.key}) -join ','
+if($actualColorOrder -ne '11,10,13'){throw "Color order must follow updated time, actual=$actualColorOrder"}
+if($colors[0].destination -ne 9 -or $colors[0].item.row -ne 11 -or $colors[1].destination -ne 11 -or $colors[1].item.row -ne 9){throw 'Machines must swap their original rows'}
+if((($colors|ForEach-Object{$_.destination}) -join ',') -ne '9,11,15'){throw 'Fixed row 13 must remain untouched'}
 $molds=@($plan|Where-Object{$_.item.kind -eq 'mold'})
-if(($molds.item.key -join ',') -ne 'm2,m1'){throw 'Night order must use full date and time'}
+if((($molds|ForEach-Object{$_.item.key}) -join ',') -ne 'm2,m1'){throw 'Night order must use full date and time'}
 $tied=@(PlanPendingScheduleOrder @(
  @{kind='color';row=11;key='b';when=[datetime]'2026-11-25T10:00:00'},
  @{kind='color';row=9;key='a';when=[datetime]'2026-11-25T10:00:00'}
 ))
-if(($tied.item.key -join ',') -ne 'a,b'){throw 'Equal times must retain row order'}
+if((($tied|ForEach-Object{$_.item.key}) -join ',') -ne 'a,b'){throw 'Equal times must retain row order'}
 $duplicates=@(PlanPendingScheduleOrder @(
  @{kind='color';row=9;key='a';when=[datetime]'2026-11-25T10:00:00'},
  @{kind='color';row=9;key='b';when=[datetime]'2026-11-25T09:50:00'}
