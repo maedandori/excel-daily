@@ -44,6 +44,16 @@ function PaintColorCell($sheet,[string]$column,[int]$row,[string]$label){
 }
 
 # Managed printable badges; preserve any unrelated workbook Shapes.
+# All badges share a single right-aligned column; multiple badges stack vertically.
+function GetScheduleBadgeLayout([double]$cellWidth,[double]$cellHeight,[double]$machineWidth,[int]$count){
+ if($count -lt 1){return $null}
+ $gap=1.0
+ $width=[Math]::Min(36.0,$cellWidth-$machineWidth-2.0)
+ $height=[Math]::Min(14.0,($cellHeight-2.0-($count-1)*$gap)/$count)
+ if($width -lt 7.0 -or $height -lt 6.0){return $null}
+ $totalHeight=$height*$count+($count-1)*$gap
+ return [pscustomobject]@{width=$width;height=$height;left=$cellWidth-1.0-$width;top=($cellHeight-$totalHeight)/2.0;step=$height+$gap}
+}
 function SetScheduleBadges($sheet,[string]$column,[int]$row,$event,$cfg){
  if($TimeOnly){return}
  try {
@@ -76,11 +86,9 @@ function SetScheduleBadges($sheet,[string]$column,[int]$row,$event,$cfg){
   }
   if(!$tags.Count){$cell.HorizontalAlignment=-4108;return}
   # Reserve space for the machine number, including merged cells.
-  $height=[Math]::Min(14.0,[double]$cell.Height-2)
-  $machineWidth=[Math]::Max(14.0,([string]$event.machine).Length*[double]$cell.Font.Size*0.65+4)
-  $available=[double]$cell.Width-$machineWidth-2-($tags.Count-1)
-  $width=[Math]::Min(36.0,$available/$tags.Count)
-  if($width -lt 7 -or $height -lt 6){
+  $machineWidth=[Math]::Max(14.0,([string]$event.machine).Length*[double]$cell.Font.Size*0.8+5)
+  $layout=GetScheduleBadgeLayout ([double]$cell.Width) ([double]$cell.Height) $machineWidth $tags.Count
+  if($null -eq $layout){
    foreach($tag in $tags){
     try{$shape=$sheet.Shapes.Item("ExcelDaily_$($tag.key)Badge_${column}_${row}");if($shape.AlternativeText -eq $tag.marker){$shape.Delete()}}catch{}
    }
@@ -89,13 +97,14 @@ function SetScheduleBadges($sheet,[string]$column,[int]$row,$event,$cfg){
    return
   }
   $cell.HorizontalAlignment=-4131
-  $top=[double]$cell.Top+([double]$cell.Height-$height)/2
-  $left=[double]$cell.Left+[double]$cell.Width-1-($width*$tags.Count)-($tags.Count-1)
+  $height=$layout.height;$width=$layout.width
+  $top=[double]$cell.Top+$layout.top
+  $left=[double]$cell.Left+$layout.left
   foreach($tag in $tags){
    $name="ExcelDaily_$($tag.key)Badge_${column}_${row}"
    $shape=$null
    try{$shape=$sheet.Shapes.Item($name)}catch{}
-   if($null -ne $shape -and $shape.AlternativeText -ne $tag.marker){$left+=$width+1;continue}
+   if($null -ne $shape -and $shape.AlternativeText -ne $tag.marker){$top+=$layout.step;continue}
    if($null -eq $shape){
     $shape=$sheet.Shapes.AddShape(5,[single]$left,[single]$top,[single]$width,[single]$height)
     $shape.Name=$name
@@ -117,7 +126,7 @@ function SetScheduleBadges($sheet,[string]$column,[int]$row,$event,$cfg){
    try{$shape.Title=$tag.detail}catch{}
    try{$shape.DrawingObject.PrintObject=$true}catch{}
    if($tag.key -eq 'Drying'){$script:DryingBadgeCount++}
-   $left+=$width+1
+   $top+=$layout.step
   }
  }catch{Write-Output "予定マーク更新失敗: $column$row / $($_.Exception.Message)"}
 }

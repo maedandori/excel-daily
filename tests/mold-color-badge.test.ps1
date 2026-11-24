@@ -73,3 +73,21 @@ $state[$prefix+'other']=@{row=9;scheduled_at='2026-11-25T12:00:00'}
 if((FindExistingSlot $sheet $cfg $event $state $book 9 2 12 @($event,$other) $now $when $false) -ne 0){throw 'Distinct scheduled order remains eligible for a separate row'}
 if($source -match 'if \(\$TimeOnly -and -not \$previous\)'){throw 'Time-only must recover missing row identity'}
 Write-Output 'ROW_IDENTITY_RECOVERY_TESTS_OK'
+
+# Verify badge geometry for one, two and three tags, including narrow cells.
+$fn=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'GetScheduleBadgeLayout'},$true)
+if(!$fn){throw 'Missing vertical badge layout'}
+Invoke-Expression $fn.Extent.Text
+foreach($n in 1..3){
+ $layout=GetScheduleBadgeLayout 55 32 20 $n
+ if($null -eq $layout){throw "Layout missing for $n badges"}
+ if($layout.left -lt 20 -or $layout.left+$layout.width -gt 55){throw 'Machine number must stay visible'}
+ if($layout.top -lt 0 -or $layout.top+($n-1)*$layout.step+$layout.height -gt 32){throw 'Badges must fit in row'}
+ if($layout.step -le $layout.height){throw 'Vertical badges overlap'}
+ if($layout.width -ne 33){throw 'Multiple badges must use the same full right-column width'}
+}
+if($null -ne (GetScheduleBadgeLayout 24 32 20 2)){throw 'Insufficient width must not overlap machine number'}
+if($null -ne (GetScheduleBadgeLayout 55 12 20 3)){throw 'Insufficient height must not overlap adjacent rows'}
+if($source -notmatch '\$top\+=\$layout\.step'){throw 'Badge rendering must advance vertically'}
+if($source -match '\$left\+=\$width\+1'){throw 'Horizontal stacking must be removed'}
+Write-Output 'VERTICAL_BADGE_LAYOUT_TESTS_OK'
