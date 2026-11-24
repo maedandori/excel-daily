@@ -66,6 +66,9 @@ jobs:
       - name: Test drying safety and duration configuration
         shell: powershell
         run: .\tests\drying.test.ps1
+      - name: Test mold color badge contract
+        shell: powershell
+        run: .\tests\mold-color-badge.test.ps1
       - name: Test Japanese color palette
         shell: powershell
         run: .\tests\color-cells.test.ps1
