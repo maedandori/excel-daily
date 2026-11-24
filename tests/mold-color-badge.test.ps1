@@ -40,3 +40,36 @@ $duplicates=@(PlanPendingScheduleOrder @(
 ))
 if($duplicates.Count){throw 'Ambiguous row identities must not move'}
 Write-Output 'PENDING_ORDER_TESTS_OK'
+
+# Simulate machine-6 with missing/stale metadata, without installed Excel.
+foreach($name in @('MachineId','TimeStillPending','FindExistingSlot','SetScheduleRowIdentity')){
+ $fn=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$true)
+ if(!$fn){throw "Missing $name"}
+ Invoke-Expression $fn.Extent.Text
+}
+function CellValue($sheet,$column,$row){return [string]$sheet["$column$row"]}
+function ExcelTimeText($sheet,$column,$row){return [string]$sheet["$column$row"]}
+function EventTime($event){return [string]$event.time}
+$cfg=[pscustomobject]@{columns=[pscustomobject]@{mold_machine='AN';mold_time='AO';color_machine='AR';color_time='AS';color_before='AU';color_after='AW'}}
+$book=[pscustomobject]@{FullName='C:\test.xlsx'}
+$sheet=@{Name='day';AN9='06';AO9='10:00'}
+$event=[pscustomobject]@{id='new';kind='mold';machine='6';time='9:50'}
+$now=[datetime]'2026-11-25T08:00:00'
+$when=[datetime]'2026-11-25T09:50:00'
+$prefix="$($book.FullName)|$($sheet.Name)|mold|"
+$state=@{}
+if((FindExistingSlot $sheet $cfg $event $state $book 9 2 12 @($event) $now $when $false) -ne 9){throw 'Machine 6 must reuse untracked existing row'}
+$state[$prefix+'old']=@{row=9;scheduled_at='2026-11-25T10:00:00'}
+if((FindExistingSlot $sheet $cfg $event $state $book 9 2 12 @($event) $now $when $false) -ne 9){throw 'Machine 6 must reuse stale pending ID'}
+SetScheduleRowIdentity $state ($prefix+'new') $prefix 9 '2026-11-25T09:50:00'
+if($state.Count -ne 1 -or $state.ContainsKey($prefix+'old') -or $state[$prefix+'new'].row -ne 9){throw 'Stale identity must be replaced'}
+$state=@{}
+$sheet.AO9='07:00'
+if((FindExistingSlot $sheet $cfg $event $state $book 9 2 12 @($event) $now $when $false) -ne -1){throw 'Past unknown row must not cause duplicate append'}
+$sheet.AO9='09:50'
+if((FindExistingSlot $sheet $cfg $event $state $book 9 2 12 @($event) $now $when $false) -ne 9){throw 'Rounded hour with leading zero must match'}
+$other=[pscustomobject]@{id='other';kind='mold';machine='6';time='12:00'}
+$state[$prefix+'other']=@{row=9;scheduled_at='2026-11-25T12:00:00'}
+if((FindExistingSlot $sheet $cfg $event $state $book 9 2 12 @($event,$other) $now $when $false) -ne 0){throw 'Distinct scheduled order remains eligible for a separate row'}
+if($source -match 'if \(\$TimeOnly -and -not \$previous\)'){throw 'Time-only must recover missing row identity'}
+Write-Output 'ROW_IDENTITY_RECOVERY_TESTS_OK'

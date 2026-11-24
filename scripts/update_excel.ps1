@@ -317,21 +317,35 @@ function FindExistingSlot($sheet,$cfg,$event,$state,$book,[int]$start,[int]$step
     $machine=[string]$event.machine
     $machineCol=if($kind -eq 'mold'){[string]$cfg.columns.mold_machine}else{[string]$cfg.columns.color_machine}
     $timeCol=if($kind -eq 'mold'){[string]$cfg.columns.mold_time}else{[string]$cfg.columns.color_time}
-    $targetTime=EventTime $event
+    $targetTime=([TimeSpan]::Parse((EventTime $event))).ToString('hh\:mm')
     $prefix="$($book.FullName)|$($sheet.Name)|$kind|"
+    $incoming=@($ordered|Where-Object{
+        [string]$_.kind -eq $kind -and (MachineId ([string]$_.machine)) -eq (MachineId $machine)
+    })
+    $liveKeys=@{}
+    foreach($item in $ordered){
+        if([string]$item.kind -eq $kind){$liveKeys[$prefix+[string]$item.id]=$true}
+    }
     $occupied=@{}
+    $stale=@{}
     foreach($entry in $state.GetEnumerator()) {
         if(([string]$entry.Key).StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase) -and $entry.Value.row) {
-            $occupied[[int]$entry.Value.row]=$true
+            $r=[int]$entry.Value.row
+            if($liveKeys.ContainsKey([string]$entry.Key)){$occupied[$r]=$true}
+            else{$stale[$r]=$true}
         }
     }
     $candidates=@()
+    $unresolved=$false
     for($i=0;$i -lt $count;$i++) {
         $row=$start+$i*$step
         if($occupied.ContainsKey($row)) { continue }
         if((MachineId (CellValue $sheet $machineCol $row)) -ne (MachineId $machine)){continue}
         $time=ExcelTimeText $sheet $timeCol $row
-        if(-not $time){continue}
+        if(-not $time){$unresolved=$true;continue}
+        if($stale.ContainsKey($row) -and ($incoming.Count -ne 1 -or (!$carryover -and !(TimeStillPending $time $scheduled $now)))){
+            $unresolved=$true;continue
+        }
         $colorMatched=$false
         if($kind -eq 'color') {
             $old=[string]$event.color_before
@@ -340,12 +354,12 @@ function FindExistingSlot($sheet,$cfg,$event,$state,$book,[int]$start,[int]$step
             $actualNew=CellValue $sheet ([string]$cfg.columns.color_after) $row
             if($old -and $new -and $actualOld -and $actualNew) {
                 $colorMatched=($actualOld.Trim() -eq $old.Trim() -and $actualNew.Trim() -eq $new.Trim())
-                if(-not $colorMatched){continue}
+                if(-not $colorMatched){$unresolved=$true;continue}
             }
         }
         $candidates+=@{row=$row;time=$time;colorMatched=$colorMatched}
     }
-    if($candidates.Count -eq 0){return 0}
+    if($candidates.Count -eq 0){if($unresolved){return -1};return 0}
     $exact=@($candidates|Where-Object{$_.time -eq $targetTime})
     if($exact.Count -eq 1){return [int]$exact[0].row}
     if($exact.Count -gt 1){return -1}
@@ -354,15 +368,20 @@ function FindExistingSlot($sheet,$cfg,$event,$state,$book,[int]$start,[int]$step
         return [int]$sameColors[0].row
     }
     if($sameColors.Count -gt 1){return -1}
-    $incoming=@($ordered|Where-Object{
-        [string]$_.kind -eq $kind -and (MachineId ([string]$_.machine)) -eq (MachineId $machine)
-    })
     if($candidates.Count -eq 1 -and $incoming.Count -eq 1 -and
        ($carryover -or (TimeStillPending $candidates[0].time $scheduled $now))) {
         return [int]$candidates[0].row
     }
-    if($candidates.Count -gt 1){return -1}
-    return 0
+    return -1
+}
+
+function SetScheduleRowIdentity($state,[string]$key,[string]$prefix,[int]$row,[string]$scheduledAt){
+    foreach($oldKey in @($state.Keys)){
+        if($oldKey -ne $key -and ([string]$oldKey).StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase) -and [int]$state[$oldKey].row -eq $row){
+            $state.Remove($oldKey)
+        }
+    }
+    $state[$key]=@{row=$row;scheduled_at=$scheduledAt}
 }
 
 # Sort only the slots belonging to known, pending events. Completed, manual,
@@ -592,12 +611,11 @@ foreach ($e in $ordered) {
         ($handoverStatuses -contains ([string]$e.status_code)) -and (-not $completed)
     $past = (($when -le $now) -and (-not $carryover)) -or $completed
     $previous = $state[$key]
-    if ($TimeOnly -and -not $previous) { $kept++; continue }
+    $prefix="$($book.FullName)|$($sheet.Name)|$kind|"
     if ($previous) {
         $row = [int]$previous.row
         if ($row -lt $start -or (($row-$start) % $step) -ne 0 -or
             $row -ge ($start + $count*$step)) {
-            if ($TimeOnly) { $kept++; continue }
             $state.Remove($key)
             $previous = $null
         }
@@ -605,7 +623,7 @@ foreach ($e in $ordered) {
     if ($previous) {
         $row = [int]$previous.row
         $previousMachine = CellValue $sheet $machineCol $row
-        if ($previousMachine -eq $machine) {
+        if ((MachineId $previousMachine) -eq (MachineId $machine)) {
             if(-not $TimeOnly){SetScheduleBadges $sheet $machineCol $row $e $cfg}
             if ($past -or ([bool]$cfg.update_policy.preserve_past -and (-not $carryover) -and
                 $previous.scheduled_at -and ([DateTime]::Parse([string]$previous.scheduled_at) -le $now))) {
@@ -614,7 +632,7 @@ foreach ($e in $ordered) {
                 continue
             }
             $newTime = EventTime $e
-            if ((CellValue $sheet $timeCol $row) -ne $newTime) {
+            if ((ExcelTimeText $sheet $timeCol $row) -ne ([TimeSpan]::Parse($newTime)).ToString('hh\:mm')) {
                 PutValue $sheet $timeCol $row $newTime
                 $changed++
             }
@@ -625,11 +643,9 @@ foreach ($e in $ordered) {
             }
             continue
         }
-        # The user edited/deleted a previously tracked row. Do not overwrite it.
-        if ($TimeOnly) { $kept++; continue }
+        # Recover the actual row instead of overwriting an operator's edit.
         $state.Remove($key)
     }
-    if ($TimeOnly) { $kept++; continue }
     # If this same machine/change is already in the Excel sheet, only refresh
     # the time cell. Don't create a duplicate when the local ID mapping was lost.
     $adopt=FindExistingSlot $sheet $cfg $e $state $book $start $step $count $ordered $now $when $carryover
@@ -640,18 +656,27 @@ foreach ($e in $ordered) {
     }
     if($adopt -gt 0) {
         SetScheduleBadges $sheet $machineCol $adopt $e $cfg
-        if(-not $past) {
+        $oldTime=ExcelTimeText $sheet $timeCol $adopt
+        $canUpdate=(-not $past) -and ($carryover -or -not [bool]$cfg.update_policy.preserve_past -or (TimeStillPending $oldTime $when $now))
+        if($canUpdate) {
             $newTime=EventTime $e
-            if((ExcelTimeText $sheet $timeCol $adopt) -ne $newTime) {
+            if($oldTime -ne ([TimeSpan]::Parse($newTime)).ToString('hh\:mm')) {
                 PutValue $sheet $timeCol $adopt $newTime
                 $changed++
             }
-            if($kind -eq 'color'){RepairColorIfBroken $sheet $cfg $e $adopt}
+            if(-not $TimeOnly -and $kind -eq 'color'){RepairColorIfBroken $sheet $cfg $e $adopt}
         }
-        $state[$key]=@{row=$adopt;scheduled_at=[string]$e.scheduled_at}
+        if($canUpdate -or $past){
+            SetScheduleRowIdentity $state $key $prefix $adopt ([string]$e.scheduled_at)
+        }
+        if($TimeOnly -and $canUpdate -and !$carryover -and $when -gt $now){
+            $pendingOrder+=[pscustomobject]@{kind=$kind;row=$adopt;key=$key;when=$when;scheduled_at=[string]$e.scheduled_at}
+        }
         $kept++
         continue
     }
+    # Time-only refresh can recover existing rows but never add a new one.
+    if($TimeOnly){$kept++;continue}
     # Never append historical/completed work, except an explicitly active
     # handover item with status 100/410/440/490 targeting this shift.
     if ($past) { $kept++; continue }
