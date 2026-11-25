@@ -320,6 +320,14 @@ function TimeStillPending([string]$existing,[datetime]$scheduled,[datetime]$now)
         return $candidate -gt $now
     } catch { return $false }
 }
+# Only a server-authorized native-shift history event can fill an empty past slot.
+# Time-only refresh, legacy JSON and completed/manual records remain protected.
+function CanAppendScheduleEvent($event,[bool]$past,[bool]$timeOnly) {
+    if($timeOnly){return $false}
+    if(-not $past){return $true}
+    return ($event.history_replay -eq $true -and $event.carryover -ne $true)
+}
+
 function FindExistingSlot($sheet,$cfg,$event,$state,$book,[int]$start,[int]$step,[int]$count,
                           [object[]]$ordered,[datetime]$now,[datetime]$scheduled,[bool]$carryover) {
     $kind=[string]$event.kind
@@ -726,11 +734,9 @@ foreach ($e in $ordered) {
         $kept++
         continue
     }
-    # Time-only refresh can recover existing rows but never add a new one.
-    if($TimeOnly){$kept++;continue}
-    # Never append historical/completed work, except an explicitly active
-    # handover item with status 100/410/440/490 targeting this shift.
-    if ($past) { $kept++; continue }
+    # Full refresh can recover missing historical rows explicitly supplied by
+    # the Worker; existing rows, uncertain matches and time-only stay protected.
+    if(-not (CanAppendScheduleEvent $e $past ([bool]$TimeOnly))){$kept++;continue}
     $emptyRow = 0
     for ($i=[int]$nextSlot[$kind]; $i -lt $count; $i++) {
         $row = $start + ($i*$step)

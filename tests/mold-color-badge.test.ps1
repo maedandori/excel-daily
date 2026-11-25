@@ -42,7 +42,7 @@ if($duplicates.Count){throw 'Ambiguous row identities must not move'}
 Write-Output 'PENDING_ORDER_TESTS_OK'
 
 # Simulate machine-6 with missing/stale metadata, without installed Excel.
-foreach($name in @('MachineId','TimeStillPending','FindExistingSlot','SetScheduleRowIdentity')){
+foreach($name in @('MachineId','TimeStillPending','FindExistingSlot','SetScheduleRowIdentity','CanAppendScheduleEvent')){
  $fn=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$true)
  if(!$fn){throw "Missing $name"}
  Invoke-Expression $fn.Extent.Text
@@ -113,3 +113,11 @@ if((VisibleScheduleDate '23:20' $nightDate 'night') -ne [datetime]'2026-11-24T23
 if((VisibleScheduleDate '04:00' $nightDate 'night') -ne [datetime]'2026-11-25T04:00:00'){throw 'Night morning date wrong'}
 if($source -notmatch '(?m)^MovePendingScheduleOrder \$sheet \$cfg \$state \$visiblePending'){throw 'Both refresh modes must sort visible rows'}
 Write-Output 'VISIBLE_SCHEDULE_ORDER_TESTS_OK'
+
+# Historical data is allowed only in the full data refresh, never in time-only.
+$history=[pscustomobject]@{history_replay=$true;carryover=$false}
+if(-not (CanAppendScheduleEvent $history $true $false)){throw 'Missing historical machine 6 must be recoverable'}
+if(CanAppendScheduleEvent $history $true $true){throw 'Time-only must never append historical rows'}
+if(CanAppendScheduleEvent ([pscustomobject]@{history_replay=$false}) $true $false){throw 'Unmarked legacy past event must remain protected'}
+if(CanAppendScheduleEvent ([pscustomobject]@{history_replay=$true;carryover=$true}) $true $false){throw 'Do not replay cross-shift historical rows'}
+if(-not (CanAppendScheduleEvent ([pscustomobject]@{}) $false $false)){throw 'Future event must remain eligible'}
