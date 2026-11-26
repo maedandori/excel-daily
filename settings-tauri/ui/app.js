@@ -9,7 +9,7 @@ let ready=false,working=false,updating=false,dirty=false,statusBusy=false;
 function say(message,error=false){$('message').textContent=String(message);$('message').classList.toggle('error',error)}
 function buttons(){for(const id of ['save','restart','stop','checkUpdate','importTomorrow'])$(id).disabled=!ready||working||updating;for(const key of fields)$(key).disabled=!ready||working||updating}
 function setDirty(value){dirty=value;$('dirty').textContent=dirty?'未保存の変更があります':'保存済み'}
-function showStatus(s){const label=s.busy?'処理中':s.running?'起動中':'停止中';$('agentState').textContent=label;$('sideState').textContent=label;$('agentVersion').textContent=s.version?'v'+s.version:label;$('statusDot').className='dot '+(s.busy?'busy':s.running?'on':'');document.querySelector('.aside-bottom .dot').className=$('statusDot').className}
+function showStatus(s){const label=s.busy?'処理中':s.running?'起動中':'停止中';$('agentState').textContent=label;$('sideState').textContent=label;$('agentVersion').textContent=s.version?'ed'+s.version:label;$('statusDot').className='dot '+(s.busy?'busy':s.running?'on':'');document.querySelector('.aside-bottom .dot').className=$('statusDot').className}
 function form(){return Object.fromEntries(fields.map(key=>[key,bools.has(key)?$(key).checked:key==='auto_save_minutes'?$(key).valueAsNumber:$(key).value]))}
 async function refreshStatus(){if(statusBusy||working||updating)return;statusBusy=true;try{showStatus(await invoke('agent_action',{action:'status'}))}catch{ $('agentState').textContent='確認できません' }finally{statusBusy=false}}
 async function persist(){await invoke('save_settings',{form:form()});setDirty(false)}
@@ -33,5 +33,5 @@ async function pollUpdate(){
  if(['UP_TO_DATE','UPDATE_DEFERRED','UPDATE_FAILED','IDLE'].includes(state)){updating=false;buttons()}
  }catch(e){say(e,true);updating=false;buttons()}finally{updatePolling=false}
 }
-async function init(){buttons();try{const result=await invoke('load_settings');$('version').textContent='Settings v'+result.version;for(const key of fields){if(bools.has(key))$(key).checked=!!result.form[key];else $(key).value=result.form[key]??''}ready=true;setDirty(false);say('準備完了');buttons();void refreshStatus()}catch(e){say(e,true)}}
+async function init(){buttons();try{const result=await invoke('load_settings');$('version').textContent='Settings ed'+result.version;for(const key of fields){if(bools.has(key))$(key).checked=!!result.form[key];else $(key).value=result.form[key]??''}ready=true;setDirty(false);say('準備完了');buttons();void refreshStatus()}catch(e){say(e,true)}}
 void init();setInterval(refreshStatus,15000);setInterval(pollUpdate,1000);

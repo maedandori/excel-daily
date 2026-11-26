@@ -459,3 +459,6 @@ untouched by script restoration.
 ## v0.3.22 — Excel 自動保存
 
 Excel 設定で自動保存の有効/無効と間隔（1〜120分、既定15分）を指定できます。既存 settings.json でも既定で有効です。ファイル名パターン（例: 成形スケジュール*.xlsx）に一致する変更済みの既存ファイルのみ保存します。先頭がワイルドカードのパターン、未保存、読み取り専用、共有ブックは対象外です。Excel 編集中・予定更新中は延期し、通常の Save を使います。Excel 標準の競合警告は維持します。新しい XLL は Excel を終了してから適用されます。
+
+## Version display
+Excel Daily uses the `edX.Y.Z` version label and GitHub release title. Cargo, update commands, and agent presence retain numeric versions. The updater accepts both `vX.Y.Z` and `edX.Y.Z` GitHub tags, but releases retain the old `v` tag until installed agents have migrated.

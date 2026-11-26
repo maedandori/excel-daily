@@ -21,7 +21,7 @@ try {
  $headers=@{'User-Agent'='excel-daily-updater';'Accept'='application/vnd.github+json'}
  Status 'CHECKING'
  $release=Invoke-RestMethod -Uri ('https://api.github.com/repos/'+$Repo+'/releases/latest') -Headers $headers -TimeoutSec 20
- $version=([string]$release.tag_name).TrimStart('v')
+ $version=([string]$release.tag_name) -replace '^(ed|v)',''
  if($version -notmatch '^\d+\.\d+\.\d+$'){throw '配信されたバージョンが正しくありません。'}
  if([version]$version -le [version]$CurrentVersion){Status 'UP_TO_DATE';exit 0}
  $zipAsset=@($release.assets|Where-Object{$_.name -eq 'excel-daily-windows.zip'})|Select-Object -First 1
