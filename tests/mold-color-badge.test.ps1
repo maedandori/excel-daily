@@ -98,17 +98,17 @@ foreach($name in @('VisibleScheduleDate','GetVisiblePendingSchedule')){
  if(!$fn){throw "Missing $name"}
  Invoke-Expression $fn.Extent.Text
 }
-function TestScheduleRowMarked($sheet,$machineCol,$timeCol,$row){return ($row -eq 15)}
+function GetScheduleRowMarkInfo($sheet,$machineCol,$timeCol,$row){return [pscustomobject]@{marked=($row -eq 15);unsafe=($row -eq 15);shapes=@()}}
 $sheet=@{Name='night';AR7='11';AS7='23:20';AR9='10';AS9='03:30';AR11='13';AS11='04:50';AR13='19';AS13='04:00';AR15='8';AS15='05:00'}
 $state=@{}
 $nightDate=[datetime]'2026-11-24'
 $now=[datetime]'2026-11-25T01:32:00'
 $visible=@(GetVisiblePendingSchedule $sheet $cfg $state $book 7 2 12 $nightDate 'night' $now @())
-if($visible.Count -ne 3){throw "Expected three unfinished rows, got $($visible.Count)"}
+if($visible.Count -ne 4){throw "Expected four safely movable rows, got $($visible.Count)"}
 $plan=@(PlanPendingScheduleOrder $visible)
 $sequence=($plan|ForEach-Object{$sheet["AR$($_.item.row)"]}) -join ','
-if($sequence -ne '10,19,13'){throw "Visible sheet order incorrect: $sequence"}
-if((($plan|ForEach-Object{$_.destination}) -join ',') -ne '9,11,13'){throw 'Finished and manually marked rows must not move'}
+if($sequence -ne '11,10,19,13'){throw "Visible sheet order incorrect: $sequence"}
+if((($plan|ForEach-Object{$_.destination}) -join ',') -ne '7,9,11,13'){throw 'Ambiguous marked row must remain fixed'}
 if((VisibleScheduleDate '23:20' $nightDate 'night') -ne [datetime]'2026-11-24T23:20:00'){throw 'Night evening date wrong'}
 if((VisibleScheduleDate '04:00' $nightDate 'night') -ne [datetime]'2026-11-25T04:00:00'){throw 'Night morning date wrong'}
 if($source -notmatch '(?m)^MovePendingScheduleOrder \$sheet \$cfg \$state \$visiblePending'){throw 'Both refresh modes must sort visible rows'}
@@ -135,3 +135,16 @@ $eta.forecast_source=''
 if(CanRefreshTrackedTime $eta $false $false $true $etaOld $etaNow){throw 'Unconfirmed MICS event must retain past protection'}
 if(CanAppendScheduleEvent $eta $false $true){throw 'Time refresh must never add rows'}
 if(-not $source.Contains("'&time_only=1'")){throw 'Time-only request must identify the refresh mode'}
+
+# The reported screenshot: all times have elapsed, but position must still sort.
+function GetScheduleRowMarkInfo($sheet,$machineCol,$timeCol,$row){return [pscustomobject]@{marked=($row -ne 13);unsafe=$false;shapes=@()}}
+$sheet=@{Name='night';AN7='8';AO7='01:00';AN9='6';AO9='18:40';AN11='14';AO11='21:30';AN13='13';AO13='00:20'}
+$nightDate=[datetime]'2026-11-26'
+$now=[datetime]'2026-11-27T03:00:00'
+$visible=@(GetVisiblePendingSchedule $sheet $cfg @{} $book 7 2 12 $nightDate 'night' $now @())
+$plan=@(PlanPendingScheduleOrder $visible)
+$actual=($plan|ForEach-Object{$sheet["AN$($_.item.row)"]}) -join ','
+if($actual -ne '6,14,13,8'){throw "Chronological night order incorrect: $actual"}
+if($source -notmatch '\$range\.Font\.Strikethrough=\$v\.strike' -or $source -notmatch '\$mark\.shape\.Top=\$mark\.targetTop'){throw 'Completion marks must travel with the event'}
+if($source -notmatch 'if\(TestScheduleRowMarked \$sheet \$machineCol \$timeCol \$row\)'){throw 'Tracked marked rows must retain actual time'}
+Write-Output 'ELAPSED_ORDER_TESTS_OK'
