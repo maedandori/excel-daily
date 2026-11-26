@@ -42,7 +42,7 @@ if($duplicates.Count){throw 'Ambiguous row identities must not move'}
 Write-Output 'PENDING_ORDER_TESTS_OK'
 
 # Simulate machine-6 with missing/stale metadata, without installed Excel.
-foreach($name in @('MachineId','TimeStillPending','FindExistingSlot','SetScheduleRowIdentity','CanAppendScheduleEvent')){
+foreach($name in @('MachineId','TimeStillPending','FindExistingSlot','SetScheduleRowIdentity','CanAppendScheduleEvent','CanRefreshTrackedTime')){
  $fn=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$true)
  if(!$fn){throw "Missing $name"}
  Invoke-Expression $fn.Extent.Text
@@ -121,3 +121,17 @@ if(CanAppendScheduleEvent $history $true $true){throw 'Time-only must never appe
 if(CanAppendScheduleEvent ([pscustomobject]@{history_replay=$false}) $true $false){throw 'Unmarked legacy past event must remain protected'}
 if(CanAppendScheduleEvent ([pscustomobject]@{history_replay=$true;carryover=$true}) $true $false){throw 'Do not replay cross-shift historical rows'}
 if(-not (CanAppendScheduleEvent ([pscustomobject]@{}) $false $false)){throw 'Future event must remain eligible'}
+
+# A delayed next order is still pending even if its previous tracked time passed.
+$etaNow=[datetime]'2026-11-27T07:20:00'
+$etaOld=@{scheduled_at='2026-11-27T07:04:00'}
+$eta=[pscustomobject]@{scheduled_at='2026-11-27T08:44:00';forecast_source='cycle';completed=$false;history_replay=$false}
+if(-not (CanRefreshTrackedTime $eta $false $false $true $etaOld $etaNow)){throw 'Live ETA must refresh tracked pending row after old time passes'}
+if(CanRefreshTrackedTime $eta $true $false $true $etaOld $etaNow){throw 'Elapsed event must remain protected'}
+$eta.completed=$true
+if(CanRefreshTrackedTime $eta $false $false $true $etaOld $etaNow){throw 'Completed event must remain protected'}
+$eta.completed=$false
+$eta.forecast_source=''
+if(CanRefreshTrackedTime $eta $false $false $true $etaOld $etaNow){throw 'Unconfirmed MICS event must retain past protection'}
+if(CanAppendScheduleEvent $eta $false $true){throw 'Time refresh must never add rows'}
+if(-not $source.Contains("'&time_only=1'")){throw 'Time-only request must identify the refresh mode'}
