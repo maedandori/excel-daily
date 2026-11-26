@@ -232,6 +232,7 @@ function FetchEvents($cfg, [string]$baseDir, [string]$shift,[int]$dateOffset=0) 
         $date = ShiftDate $shift $dateOffset
         $separator = if ($url.Contains('?')) { '&' } else { '?' }
         $requestUrl = $url + $separator + 'shift=' + [uri]::EscapeDataString($shift) + '&date=' + [uri]::EscapeDataString($date)
+        if ($TimeOnly) { $requestUrl += '&time_only=1' }
         try {
                         # Decode original HTTP bytes, not Windows PowerShell 5.1's legacy text charset.
             $httpResponse = Invoke-WebRequest -UseBasicParsing -Uri $requestUrl -Headers $headers -Method Get -TimeoutSec 15
@@ -322,6 +323,17 @@ function TimeStillPending([string]$existing,[datetime]$scheduled,[datetime]$now)
 }
 # Only a server-authorized native-shift history event can fill an empty past slot.
 # Time-only refresh, legacy JSON and completed/manual records remain protected.
+function CanRefreshTrackedTime($event,[bool]$past,[bool]$carryover,[bool]$preservePast,$previous,[datetime]$now) {
+    if($event.completed -eq $true -or $past){return $false}
+    if($carryover -or -not $preservePast){return $true}
+    # Exact stable ID and same machine already verified by the caller.
+    # A cycle forecast is for the next order of the currently running machine.
+    if([string]$event.forecast_source -eq 'cycle' -and $event.history_replay -ne $true){
+        return ([datetime]::Parse([string]$event.scheduled_at,[Globalization.CultureInfo]::InvariantCulture) -gt $now)
+    }
+    if($previous.scheduled_at -and ([datetime]::Parse([string]$previous.scheduled_at) -le $now)){return $false}
+    return $true
+}
 function CanAppendScheduleEvent($event,[bool]$past,[bool]$timeOnly) {
     if($timeOnly){return $false}
     if(-not $past){return $true}
@@ -690,8 +702,7 @@ foreach ($e in $ordered) {
         $previousMachine = CellValue $sheet $machineCol $row
         if ((MachineId $previousMachine) -eq (MachineId $machine)) {
             if(-not $TimeOnly){SetScheduleBadges $sheet $machineCol $row $e $cfg}
-            if ($past -or ([bool]$cfg.update_policy.preserve_past -and (-not $carryover) -and
-                $previous.scheduled_at -and ([DateTime]::Parse([string]$previous.scheduled_at) -le $now))) {
+            if (-not (CanRefreshTrackedTime $e $past $carryover ([bool]$cfg.update_policy.preserve_past) $previous $now)) {
                 if (-not $TimeOnly -and $kind -eq 'color') { RepairColorIfBroken $sheet $cfg $e $row }
                 $kept++
                 continue
