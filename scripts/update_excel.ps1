@@ -421,53 +421,69 @@ function VisibleScheduleDate([string]$time,[datetime]$date,[string]$shift){
  if($shift -eq 'night' -and $minutes -lt 1110){$minutes+=1440}
  return $date.Date.AddMinutes($minutes)
 }
-function TestScheduleRowMarked($sheet,[string]$machineCol,[string]$timeCol,[int]$row){
- # Protect font strikethrough and horizontal manual line/ink crossing the number.
+# Recognize row-local completion marks. Do not drag an ambiguous drawing.
+function GetScheduleRowMarkInfo($sheet,[string]$machineCol,[string]$timeCol,[int]$row){
+ $marked=$false
+ $unsafe=$false
+ $marks=@()
  foreach($column in @($machineCol,$timeCol)){
   $cell=ExcelCell $sheet $column $row
-  if($cell.Font.Strikethrough -eq $true){return $true}
+  if($cell.Font.Strikethrough -eq $true){$marked=$true}
  }
  $cell=ExcelCell $sheet $machineCol $row
  if($cell.MergeCells){$cell=$cell.MergeArea}
+ $timeCell=ExcelCell $sheet $timeCol $row
+ if($timeCell.MergeCells){$timeCell=$timeCell.MergeArea}
  $cx=[double]$cell.Left+[double]$cell.Width/2
- $cy=[double]$cell.Top+[double]$cell.Height/2
+ $rowTop=[double]$cell.Top
+ $rowBottom=$rowTop+[double]$cell.Height
+ $cy=($rowTop+$rowBottom)/2
  $tolerance=[double]$cell.Height*0.35
  foreach($shape in $sheet.Shapes){
   try{
    if([string]$shape.AlternativeText -like 'ExcelDaily managed * badge'){continue}
    $left=[double]$shape.Left;$top=[double]$shape.Top
    $w=[double]$shape.Width;$h=[double]$shape.Height
-   if($w -ge [double]$cell.Width*0.5 -and $h -le [double]$cell.Height*0.8 -and
-     $left -le $cx -and ($left+$w) -ge $cx -and
-     $top -le ($cy+$tolerance) -and ($top+$h) -ge ($cy-$tolerance)){return $true}
-  }catch{}
+   if($w -lt [double]$cell.Width*0.5 -or $left -gt $cx -or ($left+$w) -lt $cx -or
+      $top -gt ($cy+$tolerance) -or ($top+$h) -lt ($cy-$tolerance)){continue}
+   $marked=$true
+   $right=[double]$timeCell.Left+[double]$timeCell.Width
+   if([int]$shape.Type -notin @(5,9,22,23) -or $top -lt $rowTop -or
+      ($top+$h) -gt $rowBottom -or $h -gt [double]$cell.Height*0.8 -or
+      ($left+$w) -gt ($right+3) -or $left -lt ([double]$cell.Left-[double]$cell.Width*0.75)){
+    $unsafe=$true;continue
+   }
+   $marks+=@{shape=$shape;top=$top;dy=($top-$rowTop);height=$h}
+  }catch{$unsafe=$true}
  }
- return $false
+ return [pscustomobject]@{marked=$marked;unsafe=$unsafe;shapes=$marks}
+}
+function TestScheduleRowMarked($sheet,[string]$machineCol,[string]$timeCol,[int]$row){
+ $info=GetScheduleRowMarkInfo $sheet $machineCol $timeCol $row
+ return ($info.marked -or $info.unsafe)
 }
 function GetVisiblePendingSchedule($sheet,$cfg,$state,$book,[int]$start,[int]$step,[int]$count,[datetime]$date,[string]$shift,[datetime]$now,[object[]]$events){
  foreach($kind in @('mold','color')){
   $machineCol=if($kind -eq 'mold'){[string]$cfg.columns.mold_machine}else{[string]$cfg.columns.color_machine}
   $timeCol=if($kind -eq 'mold'){[string]$cfg.columns.mold_time}else{[string]$cfg.columns.color_time}
   $prefix="$($book.FullName)|$($sheet.Name)|$kind|"
-  $fixed=@{}
-  foreach($e in $events){
-   if([string]$e.kind -ne $kind -or ($e.completed -ne $true -and $e.carryover -ne $true)){continue}
-   $entry=$state[$prefix+[string]$e.id]
-   if($entry -and $entry.row){$fixed[[int]$entry.row]=$true}
-  }
   for($i=0;$i -lt $count;$i++){
    $row=$start+$i*$step
-   if($fixed.ContainsKey($row)){continue}
    $machine=MachineId (CellValue $sheet $machineCol $row)
    if(!$machine){continue}
    $when=VisibleScheduleDate (ExcelTimeText $sheet $timeCol $row) $date $shift
-   if($null -eq $when -or $when -le $now){continue}
-   if(TestScheduleRowMarked $sheet $machineCol $timeCol $row){continue}
+   if($null -eq $when){continue}
+   # Completion protects the time value, not its position in the schedule.
+   $mark=GetScheduleRowMarkInfo $sheet $machineCol $timeCol $row
+   if($mark.unsafe){
+    Write-Verbose "予定行のマークを安全に移動できません: $kind / $row"
+    continue
+   }
    [pscustomobject]@{kind=$kind;row=$row;key='';when=$when;scheduled_at=$when.ToString('s');prefix=$prefix}
   }
  }
 }
-# Plan a permutation of only the unfinished visible rows.
+# Plan a chronological permutation of safely movable visible rows.
 function PlanPendingScheduleOrder([object[]]$pending){
  foreach($kind in @('mold','color')){
   # Normalize hashtables to explicit objects before PowerShell 5.1 sorting.
@@ -485,7 +501,7 @@ function PlanPendingScheduleOrder([object[]]$pending){
   }
  }
 }
-# Move the existing managed Shapes, not unrelated worksheet objects.
+# Move managed badges and positively identified row-local completion marks.
 function MovePendingScheduleOrder($sheet,$cfg,$state,[object[]]$pending){
  $moves=0
  foreach($kind in @('mold','color')){
@@ -504,6 +520,7 @@ function MovePendingScheduleOrder($sheet,$cfg,$state,[object[]]$pending){
   $markers=@{Color='ExcelDaily managed color badge';Stamp='ExcelDaily managed stamp badge';Drying='ExcelDaily managed drying badge'}
   $snap=@{}
   $shapes=@()
+  $completionMarks=@()
   $addresses=@{}
   $blocked=$false
   # Stage every source before overwriting a single cell. Preserve number formats,
@@ -521,6 +538,8 @@ function MovePendingScheduleOrder($sheet,$cfg,$state,[object[]]$pending){
     $entry=@{value=$cell.Value2}
     $range=$cell
     if($cell.MergeCells){$range=$cell.MergeArea}
+    if($null -eq $range.Font.Strikethrough){$blocked=$true;break}
+    $entry.strike=[bool]$range.Font.Strikethrough
     if($col -eq $machineCol){$entry.alignment=$range.HorizontalAlignment}
     if($colorColumns -contains $col){
      $entry.pattern=$range.Interior.Pattern
@@ -533,6 +552,15 @@ function MovePendingScheduleOrder($sheet,$cfg,$state,[object[]]$pending){
    $snap[$row]=$cells
    $machineCell=ExcelCell $sheet $machineCol $row
    if($machineCell.MergeCells){$machineCell=$machineCell.MergeArea}
+   $markInfo=GetScheduleRowMarkInfo $sheet $machineCol $timeCol $row
+   if($markInfo.unsafe -or ($markInfo.shapes.Count -and $sheet.ProtectDrawingObjects)){$blocked=$true;break}
+   $target=ExcelCell $sheet $machineCol ([int]$move.destination)
+   if($target.MergeCells){$target=$target.MergeArea}
+   foreach($mark in $markInfo.shapes){
+    if($mark.dy+$mark.height -gt [double]$target.Height){$blocked=$true;break}
+    $completionMarks+=@{shape=$mark.shape;top=$mark.top;targetTop=([double]$target.Top+$mark.dy)}
+   }
+   if($blocked){break}
    foreach($tag in $markers.Keys){
     $name="ExcelDaily_${tag}Badge_${machineCol}_${row}"
     $shape=$null
@@ -560,6 +588,7 @@ function MovePendingScheduleOrder($sheet,$cfg,$state,[object[]]$pending){
      $cell.Value2=$v.value
      $range=$cell
      if($cell.MergeCells){$range=$cell.MergeArea}
+     $range.Font.Strikethrough=$v.strike
      if($col -eq $machineCol){$range.HorizontalAlignment=$v.alignment}
      if($colorColumns -contains $col){
       $range.Interior.Color=$v.background
@@ -575,8 +604,10 @@ function MovePendingScheduleOrder($sheet,$cfg,$state,[object[]]$pending){
     $badge.shape.Top=[double]$target.Top+$badge.dy
     $badge.shape.Name="ExcelDaily_$($badge.tag)Badge_${machineCol}_$($badge.destination)"
    }
+   foreach($mark in $completionMarks){$mark.shape.Top=$mark.targetTop}
   }catch{
    $failure=$_
+   foreach($mark in $completionMarks){try{$mark.shape.Top=$mark.top}catch{}}
    # Best-effort rollback to the post-time-update values and original badges.
    foreach($badge in $shapes){try{$badge.shape.Name='ExcelDaily_Tmp_'+[guid]::NewGuid().ToString('N')}catch{}}
    foreach($row in $snap.Keys){
@@ -584,6 +615,7 @@ function MovePendingScheduleOrder($sheet,$cfg,$state,[object[]]$pending){
      try{
       $cell=ExcelCell $sheet $col $row;$v=$snap[$row][$col];$cell.Value2=$v.value
       $range=$cell;if($cell.MergeCells){$range=$cell.MergeArea}
+      $range.Font.Strikethrough=$v.strike
       if($col -eq $machineCol){$range.HorizontalAlignment=$v.alignment}
       if($colorColumns -contains $col){$range.Interior.Color=$v.background;$range.Interior.Pattern=$v.pattern;$range.Font.Color=$v.foreground}
      }catch{}
@@ -701,6 +733,7 @@ foreach ($e in $ordered) {
         $row = [int]$previous.row
         $previousMachine = CellValue $sheet $machineCol $row
         if ((MachineId $previousMachine) -eq (MachineId $machine)) {
+            if(TestScheduleRowMarked $sheet $machineCol $timeCol $row){$kept++;continue}
             if(-not $TimeOnly){SetScheduleBadges $sheet $machineCol $row $e $cfg}
             if (-not (CanRefreshTrackedTime $e $past $carryover ([bool]$cfg.update_policy.preserve_past) $previous $now)) {
                 if (-not $TimeOnly -and $kind -eq 'color') { RepairColorIfBroken $sheet $cfg $e $row }
@@ -728,6 +761,7 @@ foreach ($e in $ordered) {
         continue
     }
     if($adopt -gt 0) {
+        if(TestScheduleRowMarked $sheet $machineCol $timeCol $adopt){$kept++;continue}
         SetScheduleBadges $sheet $machineCol $adopt $e $cfg
         $oldTime=ExcelTimeText $sheet $timeCol $adopt
         $canUpdate=(-not $past) -and ($carryover -or -not [bool]$cfg.update_policy.preserve_past -or (TimeStillPending $oldTime $when $now))
