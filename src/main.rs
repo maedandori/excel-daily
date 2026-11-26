@@ -286,7 +286,7 @@ fn main() -> anyhow::Result<()> {
     let version_path=dir.join("excel-daily-version.json");
     let version_info=serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id()});
     let _=fs::write(&version_path,serde_json::to_string_pretty(&version_info)?);
-    log(&dir, &format!("Agent started. v{}",env!("CARGO_PKG_VERSION")));
+    log(&dir, &format!("Agent started. ed{}",env!("CARGO_PKG_VERSION")));
     if !cfg.app.run_in_background || cfg.app.show_status_on_start {
         log(&dir, "Agent ready; Excel Ribbon shows status without modal startup dialogs.");
     }
