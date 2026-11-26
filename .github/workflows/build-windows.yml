@@ -150,6 +150,7 @@ jobs:
           (Get-FileHash -Algorithm SHA256 dist/excel-daily.exe).Hash.ToLower() | Set-Content -Path excel-daily.exe.sha256 -Encoding ascii -NoNewline
           (Get-FileHash -Algorithm SHA256 excel-daily-windows.zip).Hash.ToLower() | Set-Content -Path excel-daily-windows.zip.sha256 -Encoding ascii -NoNewline
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: excel-daily-windows
           path: excel-daily-windows.zip
