@@ -1,6 +1,6 @@
 [package]
 name = "excel-daily-settings"
-version = "0.3.26"
+version = "0.3.27"
 edition = "2021"
 
 [features]
