@@ -32,12 +32,40 @@ function CellValue($sheet,[string]$column,[int]$row){
 function PutValue($sheet,[string]$column,[int]$row,$value){
  (ExcelCell $sheet $column $row).Value2=$value
 }
-# Preserve Excel VARIANT types via late-bound COM dispatch rather than the
-# Windows PowerShell 5.1 scalar property binder.
+# Use the .NET COM dynamic binder with explicitly typed scalar values.
+# Avoid PowerShell's Value2 coercion and the failing reflection InvokeMember route.
 function SetScheduleRawValue($cell,$value){
- $arguments=New-Object 'object[]' 1
- $arguments[0]=$value
- $null=$cell.GetType().InvokeMember('Value2',[Reflection.BindingFlags]::SetProperty,$null,$cell,$arguments,[Globalization.CultureInfo]::InvariantCulture)
+ if(-not ('ExcelDailyNativeCellWriter' -as [type])){
+  Add-Type -ReferencedAssemblies @('System.Core.dll','Microsoft.CSharp.dll') -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class ExcelDailyNativeCellWriter {
+ public static void Write(object cell, object value) {
+  dynamic range = cell;
+  bool com = Marshal.IsComObject(cell);
+  if (value == null) {
+   if (com) {
+    if (Convert.ToBoolean(range.MergeCells)) range.MergeArea.ClearContents();
+    else range.ClearContents();
+   } else range.Value2 = null;
+  } else if (value is double) range.Value2 = (double)value;
+  else if (value is string) {
+   // Preserve literal text (including leading zero and formula-like text).
+   range.Value2 = com ? "'" + (string)value : (string)value;
+  } else if (value is bool) range.Value2 = (bool)value;
+  else throw new ArgumentException("Unsupported Excel Value2 type: " + value.GetType().FullName);
+  object actual = range.Value2;
+  if (!Object.Equals(value, actual)) {
+   // Excel may round serials at floating-point precision.
+   if (value is double && actual is double &&
+       Math.Abs((double)value - (double)actual) <= 1e-12) return;
+   throw new InvalidOperationException("Excel Value2 read-back mismatch");
+  }
+ }
+}
+'@
+ }
+ [ExcelDailyNativeCellWriter]::Write($cell.PSObject.BaseObject,$value)
 }
 function PaintColorCell($sheet,[string]$column,[int]$row,[string]$label){
  if(-not $script:ColorCellsEnabled -or -not $column){return $false}
@@ -585,8 +613,11 @@ function MovePendingScheduleOrder($sheet,$cfg,$state,[object[]]$pending){
   # Destination slots are a permutation of source slots; temporary names
   # avoid name collisions when two adjacent machines exchange places.
   $writeStep='shape names'
+  $attemptedCells=@{}
+  $attemptedMarks=@()
+  $attemptedBadges=@()
   try{
-   foreach($badge in $shapes){$badge.shape.Name='ExcelDaily_Tmp_'+[guid]::NewGuid().ToString('N')}
+   foreach($badge in $shapes){$attemptedBadges+=,$badge;$badge.shape.Name='ExcelDaily_Tmp_'+[guid]::NewGuid().ToString('N')}
    foreach($move in $moving){
     $source=$snap[[int]$move.item.row]
     $row=[int]$move.destination
@@ -594,6 +625,7 @@ function MovePendingScheduleOrder($sheet,$cfg,$state,[object[]]$pending){
      $cell=ExcelCell $sheet $col $row
      $v=$source[$col]
      $writeStep="Value2 $col$row"
+     $attemptedCells["$col$row"]=$true
      SetScheduleRawValue $cell $v.value
      $writeStep="format $col$row"
      $range=$cell
@@ -616,15 +648,16 @@ function MovePendingScheduleOrder($sheet,$cfg,$state,[object[]]$pending){
     $badge.shape.Name="ExcelDaily_$($badge.tag)Badge_${machineCol}_$($badge.destination)"
    }
    $writeStep='completion marks'
-   foreach($mark in $completionMarks){$mark.shape.Top=[single]$mark.targetTop}
+   foreach($mark in $completionMarks){$attemptedMarks+=,$mark;$mark.shape.Top=[single]$mark.targetTop}
   }catch{
    $failure=$_
    $rollbackErrors=@()
-   foreach($mark in $completionMarks){try{$mark.shape.Top=[single]$mark.top}catch{$rollbackErrors+=$_.Exception.Message}}
+   foreach($mark in $attemptedMarks){try{$mark.shape.Top=[single]$mark.top}catch{$rollbackErrors+=$_.Exception.Message}}
    # Best-effort rollback to the post-time-update values and original badges.
-   foreach($badge in $shapes){try{$badge.shape.Name='ExcelDaily_Tmp_'+[guid]::NewGuid().ToString('N')}catch{$rollbackErrors+=$_.Exception.Message}}
+   foreach($badge in $attemptedBadges){try{$badge.shape.Name='ExcelDaily_Tmp_'+[guid]::NewGuid().ToString('N')}catch{$rollbackErrors+=$_.Exception.Message}}
    foreach($row in $snap.Keys){
     foreach($col in $columns){
+     if(-not $attemptedCells.ContainsKey("$col$row")){continue}
      try{
       $cell=ExcelCell $sheet $col $row;$v=$snap[$row][$col];SetScheduleRawValue $cell $v.value
       $range=$cell;if($cell.MergeCells){$range=$cell.MergeArea}
@@ -634,7 +667,7 @@ function MovePendingScheduleOrder($sheet,$cfg,$state,[object[]]$pending){
      }catch{$rollbackErrors+="${col}${row}: $($_.Exception.Message)"}
     }
    }
-   foreach($badge in $shapes){try{$badge.shape.Left=[single]$badge.left;$badge.shape.Top=[single]$badge.top;$badge.shape.Name=$badge.name}catch{$rollbackErrors+=$_.Exception.Message}}
+   foreach($badge in $attemptedBadges){try{$badge.shape.Left=[single]$badge.left;$badge.shape.Top=[single]$badge.top;$badge.shape.Name=$badge.name}catch{$rollbackErrors+=$_.Exception.Message}}
    $rollbackInfo=if($rollbackErrors.Count){' 復元失敗: '+($rollbackErrors -join '; ')}else{''}
    throw "予定の並べ替えに失敗しました。保存せずにシートを確認してください: [$kind / $writeStep] $($failure.Exception.Message)$rollbackInfo"
   }
@@ -669,6 +702,10 @@ if(-not [string]::IsNullOrWhiteSpace($WorksheetName)){
 $script:ColorCellsEnabled=($null -eq $cfg.formatting -or $cfg.formatting.color_cells -ne $false)
 $fastWrites=($null -eq $cfg.formatting -or $cfg.formatting.fast_excel_writes -ne $false)
 $baseDir = Split-Path -Parent $Settings
+$recoveryLock=Join-Path $baseDir 'excel-daily-recovery.lock'
+if(Test-Path -LiteralPath $recoveryLock){
+ throw '前回の更新が中断されました。Excelを保存せずに確認し、安全を確認した後に excel-daily-recovery.lock を削除してください。'
+}
 $events = @(FetchEvents $cfg $baseDir $Shift $DateOffset)
 # Validate entire input before touching Excel.
 $usable = @()
@@ -714,6 +751,8 @@ $colored=0
 $nextSlot=@{mold=0;color=0}
 $script:DryingBadgeCount=0
 $script:ReorderedCount=0
+# Persistent fail-closed marker before workbook mutations. Only success removes it.
+[IO.File]::WriteAllText($recoveryLock,("$($book.FullName)`r`n$($sheet.Name)`r`n$([DateTime]::Now.ToString('o'))"),(New-Object System.Text.UTF8Encoding($false)))
 $screenChanged=$false;$eventsChanged=$false
 if($fastWrites){
  try{$oldScreen=[bool]$excel.ScreenUpdating;$excel.ScreenUpdating=$false;$screenChanged=$true}catch{}
@@ -838,6 +877,7 @@ $json = ConvertTo-Json -InputObject $state -Depth 5
 if ($cfg.update_policy.save_automatically -eq $true) {
     $book.Save()
 }
+Remove-Item -LiteralPath $recoveryLock -ErrorAction Stop
 $elapsed=[int]([DateTime]::UtcNow-$started).TotalMilliseconds
 Write-Output "date_offset=$DateOffset; shift=$Shift; Workbook=$($book.Name); sheet=$($sheet.Name); added=$added; updated_times=$changed; colored_cells=$colored; preserved=$kept; drying_badges=$script:DryingBadgeCount; reordered=$script:ReorderedCount; elapsed_ms=$elapsed; excel_saved=$($cfg.update_policy.save_automatically)"
 } finally {

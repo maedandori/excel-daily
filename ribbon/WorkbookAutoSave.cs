@@ -38,13 +38,19 @@ namespace ExcelDailyRibbon
             return AutoSaveOptions.Parse(File.ReadAllText(Path.Combine(_directory, "settings.json"), Encoding.UTF8));
         }
 
+        private static bool WritesBlocked()
+        {
+            return StatusUi.IsBusy || File.Exists(Path.Combine(_directory, "excel-daily-busy.lock"))
+                || File.Exists(Path.Combine(_directory, "excel-daily-recovery.lock"));
+        }
+
         private static void Tick()
         {
             if (_queued || _timer == null) return;
             try
             {
                 var options = ReadOptions();
-                if (!Schedule.Due(options, DateTime.UtcNow) || StatusUi.IsBusy) return;
+                if (!Schedule.Due(options, DateTime.UtcNow) || WritesBlocked()) return;
                 _queued = true;
                 int generation = _generation;
                 // Excel-DNA executes macros only when Excel is able to accept one;
@@ -65,7 +71,7 @@ namespace ExcelDailyRibbon
             AutoSaveOptions options;
             try { options = ReadOptions(); }
             catch { Schedule.Reset(); return; }
-            if (!Schedule.Due(options, DateTime.UtcNow) || StatusUi.IsBusy) return;
+            if (!Schedule.Due(options, DateTime.UtcNow) || WritesBlocked()) return;
             dynamic app = ExcelDnaUtil.Application;
             if (!Convert.ToBoolean(app.Ready)) return;
             dynamic books = app.Workbooks;
@@ -73,7 +79,7 @@ namespace ExcelDailyRibbon
             int saved = 0, failed = 0;
             for (int i = 1; i <= count; i++)
             {
-                if (StatusUi.IsBusy) return;
+                if (WritesBlocked()) return;
                 try
                 {
                     dynamic book = books.Item(i);
@@ -83,7 +89,7 @@ namespace ExcelDailyRibbon
                     if (!options.ShouldSave(name, Convert.ToBoolean(book.Saved),
                         Convert.ToBoolean(book.ReadOnly), Convert.ToBoolean(book.MultiUserEditing),
                         Path.IsPathRooted(path) && File.Exists(path))) continue;
-                    if (StatusUi.IsBusy) return;
+                    if (WritesBlocked()) return;
                     // Normal Excel Save, not SaveAs. Preserve native conflict handling.
                     book.Save();
                     if (Convert.ToBoolean(book.Saved)) saved++;

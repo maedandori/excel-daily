@@ -159,7 +159,7 @@ public sealed class ExcelDailyValue2Probe {
 }
 '@
 $probe=New-Object ExcelDailyValue2Probe
-foreach($value in @([double]6,[double](3.5/24),[double](23.5/24),'色替え','06',$true)){
+foreach($value in @([double]6,[double](3.5/24),[double](23.5/24),'色替え','06','=1+1',$true)){
  SetScheduleRawValue $probe $value
  if($probe.Value2.GetType() -ne $value.GetType() -or $probe.Value2 -cne $value){throw 'Value2 type/value was changed'}
 }
@@ -167,6 +167,8 @@ SetScheduleRawValue $probe $null
 if($null -ne $probe.Value2){throw 'Null Value2 must stay null'}
 if(([regex]::Matches($source,'SetScheduleRawValue \$cell \$v\.value')).Count -ne 2){throw 'Sort and rollback must both use the typed writer'}
 if($source -match '\$cell\.Value2=\$v\.value'){throw 'Unsafe scalar assignment remains'}
+if($source -match "\.InvokeMember\('Value2'"){throw 'Failed reflection setter was reintroduced'}
+if($source -notmatch 'attemptedCells\.ContainsKey'){throw 'Rollback must skip untouched cells'}
 Write-Output 'TYPED_VALUE2_TESTS_OK'
 
 # Optional real Excel smoke test on Windows PowerShell 5.1 with Excel installed.
@@ -185,6 +187,10 @@ if($env:EXCEL_DAILY_TEST_COM -eq '1'){
   if($cell.Value2 -isnot [double] -or [Math]::Abs($cell.Value2-$serial) -gt 1e-10){throw 'Excel time serial not preserved'}
   SetScheduleRawValue ($ws.Range('C1')) ([double]6)
   if($ws.Range('C1').Value2 -isnot [double] -or $ws.Range('C1').Value2 -ne 6){throw 'Excel machine ID not preserved'}
+  SetScheduleRawValue ($ws.Range('D1')) '06'
+  if($ws.Range('D1').Value2 -isnot [string] -or $ws.Range('D1').Value2 -cne '06'){throw 'Literal text not preserved'}
+  SetScheduleRawValue ($ws.Range('D1')) '=1+1'
+  if($ws.Range('D1').HasFormula -or $ws.Range('D1').Value2 -cne '=1+1'){throw 'Formula-like text must stay text'}
   SetScheduleRawValue $cell $null
   if($null -ne $cell.Value2){throw 'Merged-cell value not cleared'}
   Write-Output 'REAL_EXCEL_COM_TESTS_OK'
