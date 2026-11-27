@@ -32,6 +32,13 @@ function CellValue($sheet,[string]$column,[int]$row){
 function PutValue($sheet,[string]$column,[int]$row,$value){
  (ExcelCell $sheet $column $row).Value2=$value
 }
+# Preserve Excel VARIANT types via late-bound COM dispatch rather than the
+# Windows PowerShell 5.1 scalar property binder.
+function SetScheduleRawValue($cell,$value){
+ $arguments=New-Object 'object[]' 1
+ $arguments[0]=$value
+ $null=$cell.GetType().InvokeMember('Value2',[Reflection.BindingFlags]::SetProperty,$null,$cell,$arguments,[Globalization.CultureInfo]::InvariantCulture)
+}
 function PaintColorCell($sheet,[string]$column,[int]$row,[string]$label){
  if(-not $script:ColorCellsEnabled -or -not $column){return $false}
  $style=ExcelDailyColorStyle $label
@@ -577,6 +584,7 @@ function MovePendingScheduleOrder($sheet,$cfg,$state,[object[]]$pending){
   if($blocked){Write-Output "並べ替え対象に保護セル・数式・未管理マークがあります: $kind";continue}
   # Destination slots are a permutation of source slots; temporary names
   # avoid name collisions when two adjacent machines exchange places.
+  $writeStep='shape names'
   try{
    foreach($badge in $shapes){$badge.shape.Name='ExcelDaily_Tmp_'+[guid]::NewGuid().ToString('N')}
    foreach($move in $moving){
@@ -585,44 +593,50 @@ function MovePendingScheduleOrder($sheet,$cfg,$state,[object[]]$pending){
     foreach($col in $columns){
      $cell=ExcelCell $sheet $col $row
      $v=$source[$col]
-     $cell.Value2=$v.value
+     $writeStep="Value2 $col$row"
+     SetScheduleRawValue $cell $v.value
+     $writeStep="format $col$row"
      $range=$cell
      if($cell.MergeCells){$range=$cell.MergeArea}
      $range.Font.Strikethrough=$v.strike
-     if($col -eq $machineCol){$range.HorizontalAlignment=$v.alignment}
+     if($col -eq $machineCol){$range.HorizontalAlignment=[int]$v.alignment}
      if($colorColumns -contains $col){
-      $range.Interior.Color=$v.background
-      $range.Interior.Pattern=$v.pattern
-      $range.Font.Color=$v.foreground
+      $range.Interior.Color=[int]$v.background
+      $range.Interior.Pattern=[int]$v.pattern
+      $range.Font.Color=[int]$v.foreground
      }
     }
    }
+   $writeStep='badge positions'
    foreach($badge in $shapes){
     $target=ExcelCell $sheet $machineCol $badge.destination
     if($target.MergeCells){$target=$target.MergeArea}
-    $badge.shape.Left=[double]$target.Left+$badge.dx
-    $badge.shape.Top=[double]$target.Top+$badge.dy
+    $badge.shape.Left=[single]([double]$target.Left+$badge.dx)
+    $badge.shape.Top=[single]([double]$target.Top+$badge.dy)
     $badge.shape.Name="ExcelDaily_$($badge.tag)Badge_${machineCol}_$($badge.destination)"
    }
-   foreach($mark in $completionMarks){$mark.shape.Top=$mark.targetTop}
+   $writeStep='completion marks'
+   foreach($mark in $completionMarks){$mark.shape.Top=[single]$mark.targetTop}
   }catch{
    $failure=$_
-   foreach($mark in $completionMarks){try{$mark.shape.Top=$mark.top}catch{}}
+   $rollbackErrors=@()
+   foreach($mark in $completionMarks){try{$mark.shape.Top=[single]$mark.top}catch{$rollbackErrors+=$_.Exception.Message}}
    # Best-effort rollback to the post-time-update values and original badges.
-   foreach($badge in $shapes){try{$badge.shape.Name='ExcelDaily_Tmp_'+[guid]::NewGuid().ToString('N')}catch{}}
+   foreach($badge in $shapes){try{$badge.shape.Name='ExcelDaily_Tmp_'+[guid]::NewGuid().ToString('N')}catch{$rollbackErrors+=$_.Exception.Message}}
    foreach($row in $snap.Keys){
     foreach($col in $columns){
      try{
-      $cell=ExcelCell $sheet $col $row;$v=$snap[$row][$col];$cell.Value2=$v.value
+      $cell=ExcelCell $sheet $col $row;$v=$snap[$row][$col];SetScheduleRawValue $cell $v.value
       $range=$cell;if($cell.MergeCells){$range=$cell.MergeArea}
       $range.Font.Strikethrough=$v.strike
-      if($col -eq $machineCol){$range.HorizontalAlignment=$v.alignment}
-      if($colorColumns -contains $col){$range.Interior.Color=$v.background;$range.Interior.Pattern=$v.pattern;$range.Font.Color=$v.foreground}
-     }catch{}
+      if($col -eq $machineCol){$range.HorizontalAlignment=[int]$v.alignment}
+      if($colorColumns -contains $col){$range.Interior.Color=[int]$v.background;$range.Interior.Pattern=[int]$v.pattern;$range.Font.Color=[int]$v.foreground}
+     }catch{$rollbackErrors+="${col}${row}: $($_.Exception.Message)"}
     }
    }
-   foreach($badge in $shapes){try{$badge.shape.Left=$badge.left;$badge.shape.Top=$badge.top;$badge.shape.Name=$badge.name}catch{}}
-   throw "予定の並べ替えに失敗しました。保存せずにシートを確認してください: $($failure.Exception.Message)"
+   foreach($badge in $shapes){try{$badge.shape.Left=[single]$badge.left;$badge.shape.Top=[single]$badge.top;$badge.shape.Name=$badge.name}catch{$rollbackErrors+=$_.Exception.Message}}
+   $rollbackInfo=if($rollbackErrors.Count){' 復元失敗: '+($rollbackErrors -join '; ')}else{''}
+   throw "予定の並べ替えに失敗しました。保存せずにシートを確認してください: [$kind / $writeStep] $($failure.Exception.Message)$rollbackInfo"
   }
   # Remap existing identities using original rows, without assigning IDs to manual rows.
   $rowMap=@{}

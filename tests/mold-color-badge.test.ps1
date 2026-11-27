@@ -145,6 +145,51 @@ $visible=@(GetVisiblePendingSchedule $sheet $cfg @{} $book 7 2 12 $nightDate 'ni
 $plan=@(PlanPendingScheduleOrder $visible)
 $actual=($plan|ForEach-Object{$sheet["AN$($_.item.row)"]}) -join ','
 if($actual -ne '6,14,13,8'){throw "Chronological night order incorrect: $actual"}
-if($source -notmatch '\$range\.Font\.Strikethrough=\$v\.strike' -or $source -notmatch '\$mark\.shape\.Top=\$mark\.targetTop'){throw 'Completion marks must travel with the event'}
+if($source -notmatch '\$range\.Font\.Strikethrough=\$v\.strike' -or $source -notmatch '\$mark\.shape\.Top=\[single\]\$mark\.targetTop'){throw 'Completion marks must travel with the event'}
 if($source -notmatch 'if\(TestScheduleRowMarked \$sheet \$machineCol \$timeCol \$row\)'){throw 'Tracked marked rows must retain actual time'}
 Write-Output 'ELAPSED_ORDER_TESTS_OK'
+
+# Regression: machine IDs and time serials must keep their numeric VARIANT type.
+$fn=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'SetScheduleRawValue'},$true)
+if(!$fn){throw 'Missing typed Excel value writer'}
+Invoke-Expression $fn.Extent.Text
+Add-Type -TypeDefinition @'
+public sealed class ExcelDailyValue2Probe {
+ public object Value2 { get; set; }
+}
+'@
+$probe=New-Object ExcelDailyValue2Probe
+foreach($value in @([double]6,[double](3.5/24),[double](23.5/24),'色替え','06',$true)){
+ SetScheduleRawValue $probe $value
+ if($probe.Value2.GetType() -ne $value.GetType() -or $probe.Value2 -cne $value){throw 'Value2 type/value was changed'}
+}
+SetScheduleRawValue $probe $null
+if($null -ne $probe.Value2){throw 'Null Value2 must stay null'}
+if(([regex]::Matches($source,'SetScheduleRawValue \$cell \$v\.value')).Count -ne 2){throw 'Sort and rollback must both use the typed writer'}
+if($source -match '\$cell\.Value2=\$v\.value'){throw 'Unsafe scalar assignment remains'}
+Write-Output 'TYPED_VALUE2_TESTS_OK'
+
+# Optional real Excel smoke test on Windows PowerShell 5.1 with Excel installed.
+if($env:EXCEL_DAILY_TEST_COM -eq '1'){
+ $app=$null;$wb=$null
+ try{
+  $app=New-Object -ComObject Excel.Application
+  $app.DisplayAlerts=$false
+  $wb=$app.Workbooks.Add()
+  $ws=$wb.Worksheets.Item(1)
+  $ws.Range('A1:B1').Merge()
+  $cell=$ws.Range('A1')
+  $cell.NumberFormat='hh:mm'
+  $serial=[double](3.5/24)
+  SetScheduleRawValue $cell $serial
+  if($cell.Value2 -isnot [double] -or [Math]::Abs($cell.Value2-$serial) -gt 1e-10){throw 'Excel time serial not preserved'}
+  SetScheduleRawValue ($ws.Range('C1')) ([double]6)
+  if($ws.Range('C1').Value2 -isnot [double] -or $ws.Range('C1').Value2 -ne 6){throw 'Excel machine ID not preserved'}
+  SetScheduleRawValue $cell $null
+  if($null -ne $cell.Value2){throw 'Merged-cell value not cleared'}
+  Write-Output 'REAL_EXCEL_COM_TESTS_OK'
+ }finally{
+  if($null -ne $wb){$wb.Close($false)}
+  if($null -ne $app){$app.Quit()}
+ }
+}
