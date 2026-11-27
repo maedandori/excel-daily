@@ -19,3 +19,10 @@ foreach($key in @('"running"','"success"','"error"')){
  if($agent -notmatch [regex]::Escape($key)){throw "Agent status transition $key is missing"}
 }
 Write-Output 'STATUS_FEEDBACK_TESTS_OK'
+
+$autosave=Get-Content -LiteralPath (Join-Path $root 'ribbon\WorkbookAutoSave.cs') -Raw -Encoding UTF8
+if($autosave -notmatch 'excel-daily-recovery\.lock' -or $autosave -notmatch 'excel-daily-busy\.lock'){throw 'Auto save must respect recovery and busy markers'}
+if($script -notmatch 'excel-daily-recovery\.lock'){throw 'Persistent recovery marker missing'}
+if($script.IndexOf('[IO.File]::WriteAllText($recoveryLock') -gt $script.IndexOf('foreach ($e in $ordered)')){throw 'Recovery marker must precede workbook changes'}
+if($script.IndexOf('Remove-Item -LiteralPath $recoveryLock') -lt $script.IndexOf('$book.Save()')){throw 'Recovery marker removed too early'}
+Write-Output 'RECOVERY_GUARD_TESTS_OK'
