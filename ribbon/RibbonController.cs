@@ -9,6 +9,7 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using ExcelDna.Integration;
 using ExcelDna.Integration.CustomUI;
+using Microsoft.CSharp.RuntimeBinder;
 
 namespace ExcelDailyRibbon
 {
@@ -132,6 +133,8 @@ namespace ExcelDailyRibbon
             if (String.IsNullOrWhiteSpace(name))
                 throw new InvalidOperationException("この操作はワークシート上のボタンから実行してください。");
             dynamic sheet = app.ActiveSheet;
+            if (sheet == null)
+                throw new InvalidOperationException("更新するシートを選択してください。");
             dynamic shape;
             try { shape = sheet.Shapes.Item(name); }
             catch (COMException)
@@ -163,7 +166,7 @@ namespace ExcelDailyRibbon
 
             workbookFullName = SheetButtonContract.RequireSavedWorkbook(workbookFullName);
             string queue = Path.Combine(dir, "excel-daily-command.json");
-            if (File.Exists(queue) || File.Exists(Path.Combine(dir, "excel-daily-busy.lock")))
+            if (File.Exists(queue) || StatusUi.HasLiveBusyLock(dir))
                 throw new InvalidOperationException("更新処理中です。完了するまでお待ちください。");
 
             // Use the JSON serializer to preserve Japanese / UNC paths and
@@ -216,18 +219,30 @@ namespace ExcelDailyRibbon
 
         private static bool IsAgentRunning(string executable)
         {
-            foreach (Process process in Process.GetProcessesByName("excel-daily"))
+            string expected = Path.GetFullPath(executable);
+            Process[] processes = Process.GetProcessesByName("excel-daily");
+            try
             {
-                try
+                foreach (Process process in processes)
                 {
-                    if (!process.HasExited &&
-                        String.Equals(Path.GetFullPath(process.MainModule.FileName),
-                            Path.GetFullPath(executable), StringComparison.OrdinalIgnoreCase))
-                        return true;
+                    try
+                    {
+                        string imagePath;
+                        if (StatusUi.TryGetLiveProcessPath(process.Id, out imagePath) &&
+                            !string.IsNullOrEmpty(imagePath) &&
+                            String.Equals(Path.GetFullPath(imagePath), expected, StringComparison.OrdinalIgnoreCase))
+                            return true;
+                    }
+                    catch (InvalidOperationException) { }
+                    catch (System.ComponentModel.Win32Exception) { }
                 }
-                catch (InvalidOperationException) { }
-                catch (System.ComponentModel.Win32Exception) { }
-                finally { process.Dispose(); }
+            }
+            finally
+            {
+                foreach (Process process in processes)
+                {
+                    try { process.Dispose(); } catch { }
+                }
             }
             return false;
         }
@@ -261,37 +276,76 @@ namespace ExcelDailyRibbon
         {
             dynamic excel = ExcelDnaUtil.Application;
             dynamic sheet = excel.ActiveSheet;
-            if (sheet == null || Convert.ToBoolean(sheet.ProtectDrawingObjects))
+            if (sheet == null)
+                throw new InvalidOperationException("ワークシートを選択してから実行してください。");
+            bool drawingProtected;
+            try { drawingProtected = Convert.ToBoolean(sheet.ProtectDrawingObjects); }
+            catch (RuntimeBinderException) { throw new InvalidOperationException("ワークシートを選択してから実行してください。"); }
+            catch (COMException) { throw new InvalidOperationException("ワークシートを選択してから実行してください。"); }
+            if (drawingProtected)
                 throw new InvalidOperationException("シートが保護されているためボタンを編集できません。保護を解除してください。");
             int dataCount = 0;
             int timeCount = 0;
             dynamic shapes = sheet.Shapes;
-            int existing = Convert.ToInt32(shapes.Count, CultureInfo.InvariantCulture);
-            for (int i = 1; i <= existing; i++)
+            try
             {
-                dynamic shape = shapes.Item(i);
-                string name = Convert.ToString(shape.Name);
-                string alt = Convert.ToString(shape.AlternativeText);
-                if (SheetButtonContract.IsKind(name, alt, "data"))
+                int existing = Convert.ToInt32(shapes.Count, CultureInfo.InvariantCulture);
+                for (int i = 1; i <= existing; i++)
                 {
-                    shape.OnAction = SheetButtonContract.DataCommand;
-                    shape.AlternativeText = SheetButtonContract.DataTag;
-                    dataCount++;
+                    dynamic shape = shapes.Item(i);
+                    try
+                    {
+                        string name = Convert.ToString(shape.Name);
+                        string alt = Convert.ToString(shape.AlternativeText);
+                        if (SheetButtonContract.IsKind(name, alt, "data"))
+                        {
+                            shape.OnAction = SheetButtonContract.DataCommand;
+                            shape.AlternativeText = SheetButtonContract.DataTag;
+                            dataCount++;
+                        }
+                        else if (SheetButtonContract.IsKind(name, alt, "time"))
+                        {
+                            shape.OnAction = SheetButtonContract.TimeCommand;
+                            shape.AlternativeText = SheetButtonContract.TimeTag;
+                            timeCount++;
+                        }
+                    }
+                    finally
+                    {
+                        if (shape != null && Marshal.IsComObject(shape)) Marshal.ReleaseComObject(shape);
+                    }
                 }
-                else if (SheetButtonContract.IsKind(name, alt, "time"))
+                if (!repairOnly)
                 {
-                    shape.OnAction = SheetButtonContract.TimeCommand;
-                    shape.AlternativeText = SheetButtonContract.TimeTag;
-                    timeCount++;
+                    dynamic cell = excel.ActiveCell;
+                    if (cell == null)
+                        throw new InvalidOperationException("セルを選択してからボタンを追加してください。");
+                    try
+                    {
+                        float left = Convert.ToSingle(cell.Left, CultureInfo.InvariantCulture);
+                        float top = Convert.ToSingle(cell.Top, CultureInfo.InvariantCulture);
+                        if (dataCount == 0)
+                        {
+                            dynamic added = Add(sheet, "data", left, top);
+                            if (added != null && Marshal.IsComObject(added)) Marshal.ReleaseComObject(added);
+                            dataCount++;
+                        }
+                        if (timeCount == 0)
+                        {
+                            dynamic added = Add(sheet, "time", left + 150f, top);
+                            if (added != null && Marshal.IsComObject(added)) Marshal.ReleaseComObject(added);
+                            timeCount++;
+                        }
+                    }
+                    finally
+                    {
+                        if (cell != null && Marshal.IsComObject(cell)) Marshal.ReleaseComObject(cell);
+                    }
                 }
             }
-            if (!repairOnly)
+            finally
             {
-                dynamic cell = excel.ActiveCell;
-                float left = Convert.ToSingle(cell.Left, CultureInfo.InvariantCulture);
-                float top = Convert.ToSingle(cell.Top, CultureInfo.InvariantCulture);
-                if (dataCount == 0) { Add(sheet, "data", left, top); dataCount++; }
-                if (timeCount == 0) { Add(sheet, "time", left + 150f, top); timeCount++; }
+                if (shapes != null && Marshal.IsComObject(shapes)) Marshal.ReleaseComObject(shapes);
             }
             if (dataCount + timeCount == 0)
                 throw new InvalidOperationException("このシートに再設定できるExcel Dailyボタンがありません。");

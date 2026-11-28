@@ -10,7 +10,6 @@ fn log_event(dir:&Path,message:&str){
  if let Some(local)=env::var_os("LOCALAPPDATA") {
   paths.push(PathBuf::from(local).join("ExcelDaily").join("settings.log"));
  }
- paths.push(env::temp_dir().join("excel-daily-settings.log"));
  for p in paths {
   if let Some(parent)=p.parent(){let _=fs::create_dir_all(parent);}
   if let Ok(mut file)=fs::OpenOptions::new().append(true).create(true).open(&p){

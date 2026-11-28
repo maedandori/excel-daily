@@ -12,14 +12,15 @@ pub fn write(dir: &Path, state: &str, message: &str) {
         "message": status_message(message),
         "updated_ms": now
     });
-    let temp = dir.join("excel-daily-status.tmp");
+    let temp = dir.join(format!("excel-daily-status-{}-{}.tmp", std::process::id(), now));
     let path = dir.join("excel-daily-status.json");
     if let Ok(bytes) = serde_json::to_vec(&content) {
         if fs::write(&temp, bytes).is_ok() {
-            // Windows rename doesn't overwrite a destination. If Excel's UI
-            // reads while this file is briefly absent it will retry next tick.
-            let _ = fs::remove_file(&path);
-            let _ = fs::rename(&temp, &path);
+            if fs::rename(&temp, &path).is_err() {
+                let _ = fs::remove_file(&path);
+                let _ = fs::rename(&temp, &path);
+            }
+            let _ = fs::remove_file(&temp);
         }
     }
 }

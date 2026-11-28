@@ -98,7 +98,7 @@ function UpdateDryingTable {
    $row=[int]$previous.row
    if($past -or ($cfg.update_policy.preserve_past -eq $true -and !$carryover -and
       $previous.scheduled_at -and
-      [datetime]::Parse([string]$previous.scheduled_at) -le $now)){
+      [datetime]::Parse([string]$previous.scheduled_at,[Globalization.CultureInfo]::InvariantCulture) -le $now)){
     $stats.preserved++;continue
    }
    if((ExcelTimeText $sheet $startCol $row) -ne $targetTime){

@@ -1,6 +1,6 @@
 {
   "productName": "Excel Daily Settings",
-  "version": "0.3.28",
+  "version": "0.3.29",
   "identifier": "jp.maedandori.excel-daily.settings",
   "build": {
     "frontendDist": "ui"
@@ -20,7 +20,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     }
   },
   "bundle": {

@@ -25,13 +25,74 @@ namespace ExcelDailyRibbon
         private static string _lastCompletion = "";
         private static readonly JavaScriptSerializer Serializer = new JavaScriptSerializer();
 
+        private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+        private const uint STILL_ACTIVE = 259;
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr OpenProcess(uint access, bool inheritHandle, int processId);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool QueryFullProcessImageName(IntPtr process, int flags, StringBuilder exeName, ref int size);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(IntPtr handle);
+
+        internal static bool TryGetLiveProcessPath(int pid, out string path)
+        {
+            path = null;
+            if (pid <= 0) return false;
+            IntPtr handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+            if (handle == IntPtr.Zero) return false;
+            try
+            {
+                uint exitCode;
+                if (!GetExitCodeProcess(handle, out exitCode) || exitCode != STILL_ACTIVE) return false;
+                var sb = new StringBuilder(1024);
+                int len = sb.Capacity;
+                if (QueryFullProcessImageName(handle, 0, sb, ref len))
+                    path = sb.ToString(0, len);
+                return true;
+            }
+            finally
+            {
+                CloseHandle(handle);
+            }
+        }
+
+        internal static bool HasLiveBusyLock(string dir)
+        {
+            if (string.IsNullOrEmpty(dir)) return false;
+            string lockPath = Path.Combine(dir, "excel-daily-busy.lock");
+            if (!File.Exists(lockPath)) return false;
+            try
+            {
+                string raw = File.ReadAllText(lockPath, Encoding.UTF8).Trim();
+                int pid;
+                if (int.TryParse(raw, out pid) && pid > 0)
+                {
+                    string _;
+                    if (TryGetLiveProcessPath(pid, out _)) return true;
+                    if ((DateTime.UtcNow - File.GetLastWriteTimeUtc(lockPath)).TotalSeconds > 5)
+                    {
+                        try { File.Delete(lockPath); } catch { }
+                        return false;
+                    }
+                }
+            }
+            catch { }
+            return true;
+        }
+
         public static bool IsBusy
         {
             get
             {
                 EnsureDirectory();
                 if (File.Exists(Path.Combine(_directory, "excel-daily-command.json")) ||
-                    File.Exists(Path.Combine(_directory, "excel-daily-busy.lock"))) return true;
+                    HasLiveBusyLock(_directory)) return true;
                 if (_submittedUtc == DateTime.MinValue) return false;
                 AgentStatus latest = Read();
                 if (latest != null && (latest.state == "success" || latest.state == "error"))

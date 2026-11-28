@@ -23,7 +23,7 @@ function ReadArchitecture {
     $office64='HKLM:\SOFTWARE\Microsoft\Office\16.0\Excel\InstallRoot'
     if(Test-Path $office32){return 'x86'}
     if(Test-Path $office64){return 'x64'}
-    throw 'Excel 2019の32/64ビットを判定できません。ビット数を指定して再実行してください: .\install-ribbon.ps1 -Bitness x86 hoặc x64.'
+    throw 'Excel 2019の32/64ビットを判定できません。ビット数を指定して再実行してください: .\install-ribbon.ps1 -Bitness x86 または x64.'
 }
 
 if($Diagnose){
@@ -69,7 +69,8 @@ foreach($name in $existing){
             Remove-ItemProperty -LiteralPath $key -Name $name
             Write-Output "登録を解除しました: $name"
         } else {
-            if($value -eq ('/R "'+$xll+'"')){
+            $normalized=$value.Trim()
+            if($normalized -ieq ('/R "'+$xll+'"') -or $normalized -ieq ('"'+$xll+'"') -or $normalized -ieq $xll){
                 Write-Output "登録済み: $xll"
                 $found++
             }else{
@@ -80,7 +81,16 @@ foreach($name in $existing){
         }
     }
 }
-if($Remove){Write-Output 'リボンの登録を解除しました。Excelを再起動してください。';exit 0}
+if($Remove){
+    $remaining=@((Get-Item -LiteralPath $key).GetValueNames()|Where-Object{$_ -match '^OPEN\d*$'}|Sort-Object {if($_ -eq 'OPEN'){-1}else{[int]$_.Substring(4)}})
+    $values=@($remaining|ForEach-Object{[string](Get-Item -LiteralPath $key).GetValue($_)})
+    foreach($oldName in $remaining){Remove-ItemProperty -LiteralPath $key -Name $oldName -ErrorAction SilentlyContinue}
+    for($i=0;$i -lt $values.Count;$i++){
+        $slot=if($i -eq 0){'OPEN'}else{'OPEN'+$i}
+        New-ItemProperty -LiteralPath $key -Name $slot -Value $values[$i] -PropertyType String -Force|Out-Null
+    }
+    Write-Output 'リボンの登録を解除しました。Excelを再起動してください。';exit 0
+}
 if($found -gt 0){exit 0}
 for($i=0;$i -lt 100;$i++){
     $name=if($i -eq 0){'OPEN'}else{'OPEN'+$i}

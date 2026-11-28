@@ -53,7 +53,7 @@ struct UpdateOptions {
     repository: String,
 }
 impl Default for UpdateOptions {
-    fn default() -> Self { Self { enabled: false, check_interval_hours: 6, repository: "maedandori/excel-daily".to_string() } }
+    fn default() -> Self { Self { enabled: true, check_interval_hours: 6, repository: "maedandori/excel-daily".to_string() } }
 }
 fn executable_dir() -> PathBuf {
     std::env::current_exe()
@@ -111,10 +111,10 @@ fn call_excel(dir: PathBuf, action: &'static str, busy: Arc<AtomicBool>, workboo
         if action == "refresh_times" { command.arg("-TimeOnly"); }
         if action == "tomorrow" { command.arg("-DateOffset").arg("1"); }
         if let Some(ref full_name) = workbook_target {
-            command.arg("-WorkbookFullName").arg(full_name);
+            command.arg(format!("-WorkbookFullName:{}", full_name));
         }
         if let Some(ref sheet_name) = sheet_target {
-            command.arg("-WorksheetName").arg(sheet_name);
+            command.arg(format!("-WorksheetName:{}", sheet_name));
         }
         match command.output() {
             Ok(o) => {
@@ -146,7 +146,7 @@ fn call_excel(dir: PathBuf, action: &'static str, busy: Arc<AtomicBool>, workboo
             Err(e) => {
                 log(&dir, &format!("{} action={} powershell failed: {}", shift, action, e));
                 failures.push(format!("{}の更新に失敗しました",
-                    if *shift == "day" { "昼勤" } else { "夜勤" }));
+                    if *shift == "auto" { "選択中のシート" } else if *shift == "day" { "昼勤" } else { "夜勤" }));
             }
         }
     }
@@ -162,7 +162,7 @@ fn call_excel(dir: PathBuf, action: &'static str, busy: Arc<AtomicBool>, workboo
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum UpdateDecision { Ready, Deferred, NoChange }
+enum UpdateDecision { Ready, Deferred, UpToDate, Failed }
 
 fn check_for_update(dir: &Path, exe: &Path, repo: &str) -> UpdateDecision {
     let mut command = Command::new("powershell.exe");
@@ -182,6 +182,7 @@ fn check_for_update(dir: &Path, exe: &Path, repo: &str) -> UpdateDecision {
             if !o.status.success() {
                 log(dir, &format!("Update check failed: {}", String::from_utf8_lossy(&o.stderr)));
                 status::write(dir, "error", "更新の確認に失敗しました。詳細はexcel-daily.logを確認してください。");
+                return UpdateDecision::Failed;
             } else if stdout.contains("UPDATE_DEFERRED") {
                 log(dir, "UPDATE_DEFERRED: workbook task active.");
                 status::write(dir, "deferred", "自動更新を保留しました。処理完了後に再確認します。");
@@ -191,13 +192,14 @@ fn check_for_update(dir: &Path, exe: &Path, repo: &str) -> UpdateDecision {
                 status::write(dir, "running", "更新ファイルの確認が完了しました。安全に更新を適用しています。");
                 return UpdateDecision::Ready;
             }
+            UpdateDecision::UpToDate
         }
         Err(e) => {
             log(dir, &format!("Update check unavailable: {e}"));
             status::write(dir, "error", "更新の確認を開始できませんでした。詳細はログを確認してください。");
+            UpdateDecision::Failed
         }
     }
-    UpdateDecision::NoChange
 }
 // Ribbon is installed per-user, without administrative permissions or VBA.
 // Do not treat Office Add-in policy failures as fatal for the original hotkeys.
@@ -247,11 +249,55 @@ fn agent_presence(dir: &Path,command_id: Option<u64>,status: Option<&str>)->Opti
        Err(e)=>{log(dir,&format!("Presence invocation failed: {e}"));None}
     }
 }
+#[link(name = "kernel32")]
+extern "system" {
+    fn CreateMutexW(attrs: *const std::ffi::c_void, initial_owner: i32, name: *const u16) -> *mut std::ffi::c_void;
+    fn GetLastError() -> u32;
+    fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+}
+const ERROR_ALREADY_EXISTS: u32 = 183;
+struct SingleInstanceGuard(*mut std::ffi::c_void);
+impl Drop for SingleInstanceGuard {
+    fn drop(&mut self) {
+        if !self.0.is_null() { unsafe { CloseHandle(self.0); } }
+    }
+}
+fn acquire_single_instance(dir: &Path) -> Option<SingleInstanceGuard> {
+    let canonical = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let key = canonical.to_string_lossy().to_ascii_lowercase();
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in key.as_bytes() {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let name: Vec<u16> = format!("Local\\ExcelDailyAgent_{hash:016x}\0").encode_utf16().collect();
+    let handle = unsafe { CreateMutexW(std::ptr::null(), 1, name.as_ptr()) };
+    if handle.is_null() { return Some(SingleInstanceGuard(std::ptr::null_mut())); }
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        unsafe { CloseHandle(handle); }
+        return None;
+    }
+    Some(SingleInstanceGuard(handle))
+}
 fn main() -> anyhow::Result<()> {
     let dir = executable_dir();
+    let Some(_instance_guard) = acquire_single_instance(&dir) else {
+        return Ok(());
+    };
+    let _ = fs::remove_file(dir.join("excel-daily-busy.lock"));
+    if let Err(e) = run(&dir) {
+        log(&dir, &format!("Agent startup/runtime error: {e:#}"));
+        status::write(&dir, "error", "Excel Dailyの起動に失敗しました。設定とログを確認してください。");
+        return Err(e);
+    }
+    Ok(())
+}
+fn run(dir: &Path) -> anyhow::Result<()> {
+    let dir = dir.to_path_buf();
     let cfg_path = dir.join("settings.json");
-    let cfg: Config = serde_json::from_str(&fs::read_to_string(&cfg_path)
-        .map_err(|e| anyhow::anyhow!("Cannot read {}: {}", cfg_path.display(), e))?)?;
+    let raw_cfg = fs::read_to_string(&cfg_path)
+        .map_err(|e| anyhow::anyhow!("Cannot read {}: {}", cfg_path.display(), e))?;
+    let cfg: Config = serde_json::from_str(raw_cfg.trim_start_matches('\u{feff}'))?;
     let exe = std::env::current_exe()?;
     if let Err(e) = set_autostart(cfg.app.start_with_windows, &exe) {
         log(&dir, &format!("autostart registry error: {e}"));
@@ -267,21 +313,6 @@ fn main() -> anyhow::Result<()> {
     fs::write(dir.join("apply_update.ps1"), include_str!("../scripts/apply_update.ps1"))?;
     fs::write(dir.join("update_safety.ps1"), include_str!("../scripts/update_safety.ps1"))?;
     fs::write(dir.join("install-ribbon.ps1"), include_str!("../scripts/install-ribbon.ps1"))?;
-    // Finish a staged Ribbon update at startup and periodically, even if
-    // automatic release checks are disabled.
-    let pending_dir=dir.clone();
-    thread::spawn(move || loop {
-        if pending_dir.join("ExcelDailyRibbon.xll.pending").exists() ||
-           pending_dir.join("ExcelDailyRibbon64.xll.pending").exists() ||
-           pending_dir.join("ribbon-version.json.pending").exists() {
-            let _=Command::new("powershell.exe")
-                .args(["-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-Command"])
-                .arg("$ErrorActionPreference='Stop'; . (Join-Path (Get-Location) 'update_safety.ps1'); $null=Complete-ExcelDailyPendingRibbon -Root (Get-Location).Path")
-                .current_dir(&pending_dir).creation_flags(CREATE_NO_WINDOW)
-                .stdin(Stdio::null()).output();
-        }
-        thread::sleep(Duration::from_secs(15));
-    });
     ensure_ribbon_registered(&dir);
     let version_path=dir.join("excel-daily-version.json");
     let version_info=serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id()});
@@ -312,6 +343,25 @@ fn main() -> anyhow::Result<()> {
         registered.push(id);
     }
     let busy = Arc::new(AtomicBool::new(false));
+    // Finish a staged Ribbon update at startup and periodically, even if
+    // automatic release checks are disabled.
+    {
+        let pending_dir=dir.clone();
+        let pending_busy=busy.clone();
+        thread::spawn(move || loop {
+            if !pending_busy.load(Ordering::SeqCst) && (
+               pending_dir.join("ExcelDailyRibbon.xll.pending").exists() ||
+               pending_dir.join("ExcelDailyRibbon64.xll.pending").exists() ||
+               pending_dir.join("ribbon-version.json.pending").exists()) {
+                let _=Command::new("powershell.exe")
+                    .args(["-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-Command"])
+                    .arg("$ErrorActionPreference='Stop'; . (Join-Path (Get-Location) 'update_safety.ps1'); $null=Complete-ExcelDailyPendingRibbon -Root (Get-Location).Path")
+                    .current_dir(&pending_dir).creation_flags(CREATE_NO_WINDOW)
+                    .stdin(Stdio::null()).output();
+            }
+            thread::sleep(Duration::from_secs(60));
+        });
+    }
     if cfg.auto_update.enabled {
         let update_busy = busy.clone();
         let update_dir = dir.clone();
@@ -327,7 +377,7 @@ fn main() -> anyhow::Result<()> {
                     match check_for_update(&update_dir, &update_exe, &update_repo) {
                         UpdateDecision::Ready => std::process::exit(0),
                         UpdateDecision::Deferred => deferred = true,
-                        UpdateDecision::NoChange => {}
+                        UpdateDecision::UpToDate | UpdateDecision::Failed => {}
                     }
                     update_busy.store(false, Ordering::SeqCst);
                 }
@@ -352,8 +402,11 @@ fn main() -> anyhow::Result<()> {
                                     let _=agent_presence(&dir2,Some(cmd),Some("staged"));
                                     std::process::exit(0);
                                 }
-                                UpdateDecision::NoChange => {
+                                UpdateDecision::Failed => {
                                     let _=agent_presence(&dir2,Some(cmd),Some("failed"));
+                                }
+                                UpdateDecision::UpToDate => {
+                                    log(&dir2,"Admin update requested but agent is already up to date.");
                                 }
                                 UpdateDecision::Deferred => {
                                     // Keep remote command pending until the current workbook operation finishes.
@@ -400,9 +453,9 @@ fn main() -> anyhow::Result<()> {
                         .map(str::to_owned);
                     if let Some(ref full_name)=workbook_target {
                         if !std::path::Path::new(full_name).is_absolute() {
-                            queue_busy.store(false,Ordering::SeqCst);
                             log(&queue_dir,"Invalid Ribbon workbook target; request dropped.");
                             status::write(&queue_dir,"error","指定されたExcelファイルが無効です。更新は実行されませんでした。");
+                            queue_busy.store(false,Ordering::SeqCst);
                             continue;
                         }
                     }
@@ -413,16 +466,16 @@ fn main() -> anyhow::Result<()> {
                          matches!(action,"all"|"refresh_times") && sheet_target.is_none()) ||
                         sheet_target.as_ref().is_some_and(|name|
                             name.is_empty() || name.encode_utf16().count()>31) {
-                        queue_busy.store(false,Ordering::SeqCst);
                         log(&queue_dir,"Workbook/sheet routing missing or invalid; request rejected.");
                         status::write(&queue_dir,"error","シートの指定が無効です。Excelを再起動してから再実行してください。");
+                        queue_busy.store(false,Ordering::SeqCst);
                         continue;
                     }
                     call_excel(queue_dir.clone(),action,queue_busy.clone(),workbook_target,sheet_target);
                 } else {
-                    queue_busy.store(false,Ordering::SeqCst);
                     log(&queue_dir,"Invalid Ribbon/Settings command ignored.");
                     status::write(&queue_dir,"error","更新コマンドが無効です。ファイルは変更されていません。");
+                    queue_busy.store(false,Ordering::SeqCst);
                 }
             }
             thread::sleep(Duration::from_secs(2));

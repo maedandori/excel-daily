@@ -11,6 +11,7 @@ $ErrorActionPreference = "Stop"
 # which corrupts Japanese file paths when Rust reads them as UTF-8.
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $OutputEncoding = [Console]::OutputEncoding
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 Add-Type -AssemblyName System.Windows.Forms
 
 # Cache Excel COM references; merged cells use their actual top-left value cell.
@@ -32,6 +33,13 @@ function CellValue($sheet,[string]$column,[int]$row){
 function PutValue($sheet,[string]$column,[int]$row,$value){
  (ExcelCell $sheet $column $row).Value2=$value
 }
+function PutTextValue($sheet,[string]$column,[int]$row,[string]$value){
+ $cell=ExcelCell $sheet $column $row
+ $nf=''
+ try{$nf=[string]$cell.NumberFormat}catch{}
+ if($nf -ne '@' -and $value -match '^[=+\-@\t\r]'){$cell.Value2="'"+$value}
+ else{$cell.Value2=$value}
+}
 # Use the .NET COM dynamic binder with explicitly typed scalar values.
 # Avoid PowerShell's Value2 coercion and the failing reflection InvokeMember route.
 function SetScheduleRawValue($cell,$value){
@@ -50,8 +58,10 @@ public static class ExcelDailyNativeCellWriter {
    } else range.Value2 = null;
   } else if (value is double) range.Value2 = (double)value;
   else if (value is string) {
-   // Preserve literal text (including leading zero and formula-like text).
-   range.Value2 = com ? "'" + (string)value : (string)value;
+   // Preserve literal text; @-formatted cells must not receive a literal apostrophe.
+   string nf = com ? Convert.ToString(range.NumberFormat) : null;
+   bool isTextFormat = string.Equals(nf, "@", StringComparison.Ordinal);
+   range.Value2 = (com && !isTextFormat) ? "'" + (string)value : (string)value;
   } else if (value is bool) range.Value2 = (bool)value;
   else throw new ArgumentException("Unsupported Excel Value2 type: " + value.GetType().FullName);
   object actual = range.Value2;
@@ -255,22 +265,47 @@ function PickSheetExactly($book,[string]$name){
     throw "指定されたシート「$name」が対象ブックに見つかりません。更新は実行されませんでした。"
 }
 . (Join-Path $PSScriptRoot 'shift_date.ps1')
+function Test-ExcelDailyApiUri([string]$raw) {
+    try {
+        $u = [System.Uri]$raw
+        if (-not $u.IsAbsoluteUri -or $u.Scheme -ne 'https' -or $u.AbsolutePath -ne '/api/excel-daily/events' -or $u.UserInfo -or $u.Query -or $u.Fragment) { return $false }
+        $h = $u.DnsSafeHost.ToLowerInvariant()
+        if (!$h -or $h -eq 'localhost' -or $h.EndsWith('.localhost') -or $h.EndsWith('.local') -or $h.EndsWith('.internal') -or $h.Contains(':')) { return $false }
+        $ip = $null
+        if ([System.Net.IPAddress]::TryParse($h, [ref]$ip)) {
+            $b = $ip.GetAddressBytes()
+            if ($b.Length -ne 4 -or $b[0] -eq 0 -or $b[0] -eq 10 -or $b[0] -eq 127 -or ($b[0] -eq 169 -and $b[1] -eq 254) -or ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or ($b[0] -eq 192 -and $b[1] -eq 168) -or ($b[0] -eq 255 -and $b[1] -eq 255)) { return $false }
+        }
+        return $true
+    } catch { return $false }
+}
+function Resolve-ExcelDailyToken([string]$raw) {
+    if (!$raw) { return '' }
+    $t = $raw.Trim()
+    if ($t.StartsWith('dpapi:')) {
+        Add-Type -AssemblyName System.Security
+        $enc = [Convert]::FromBase64String($t.Substring(6))
+        $plain = [System.Security.Cryptography.ProtectedData]::Unprotect($enc, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+        return [Text.Encoding]::UTF8.GetString($plain)
+    }
+    return $t
+}
 function FetchEvents($cfg, [string]$baseDir, [string]$shift,[int]$dateOffset=0) {
     $script:DryingEntries=@()
     $url = [string]$cfg.data_source.api_url
     if ($url) {
-        $headers = @{}
-        if ($cfg.data_source.api_token) { $headers.Authorization = "Bearer $($cfg.data_source.api_token)" }
+        $token = Resolve-ExcelDailyToken ([string]$cfg.data_source.api_token)
         # API must return {"events":[...]} with the documented fields.
-        if (!$cfg.data_source.api_token) { throw '認証トークンが設定されていません。Excel Daily用トークンを設定してください。' }
-        if ($url -notmatch '^https://') { throw 'APIの接続先にはHTTPSを使用してください。' }
+        if (!$token) { throw '認証トークンが設定されていません。Excel Daily用トークンを設定してください。' }
+        if (-not (Test-ExcelDailyApiUri $url)) { throw 'APIの接続先URLが正しくありません（HTTPS / /api/excel-daily/events のみ許可）。' }
+        $headers = @{ Authorization = "Bearer $token" }
         $date = ShiftDate $shift $dateOffset
         $separator = if ($url.Contains('?')) { '&' } else { '?' }
         $requestUrl = $url + $separator + 'shift=' + [uri]::EscapeDataString($shift) + '&date=' + [uri]::EscapeDataString($date)
         if ($TimeOnly) { $requestUrl += '&time_only=1' }
         try {
                         # Decode original HTTP bytes, not Windows PowerShell 5.1's legacy text charset.
-            $httpResponse = Invoke-WebRequest -UseBasicParsing -Uri $requestUrl -Headers $headers -Method Get -TimeoutSec 15
+            $httpResponse = Invoke-WebRequest -UseBasicParsing -Uri $requestUrl -Headers $headers -Method Get -TimeoutSec 15 -MaximumRedirection 0
             if (-not $httpResponse.RawContentStream) { throw 'APIからデータを取得できませんでした。' }
             $utf8 = New-Object System.Text.UTF8Encoding($false, $true)
             $payload = $utf8.GetString($httpResponse.RawContentStream.ToArray())
@@ -311,7 +346,7 @@ function RepairColorIfBroken($sheet, $cfg, $event, [int]$row) {
         $column = [string]$pair[0]
         $correct = [string]$pair[1]
         if ($column -and $correct -and (LooksMojibake (CellValue $sheet $column $row))) {
-            PutValue $sheet $column $row $correct
+            PutTextValue $sheet $column $row $correct
             $null=PaintColorCell $sheet $column $row $correct
         }
     }
@@ -366,7 +401,7 @@ function CanRefreshTrackedTime($event,[bool]$past,[bool]$carryover,[bool]$preser
     if([string]$event.forecast_source -eq 'cycle' -and $event.history_replay -ne $true){
         return ([datetime]::Parse([string]$event.scheduled_at,[Globalization.CultureInfo]::InvariantCulture) -gt $now)
     }
-    if($previous.scheduled_at -and ([datetime]::Parse([string]$previous.scheduled_at) -le $now)){return $false}
+    if($previous.scheduled_at -and ([datetime]::Parse([string]$previous.scheduled_at,[Globalization.CultureInfo]::InvariantCulture) -le $now)){return $false}
     return $true
 }
 function CanAppendScheduleEvent($event,[bool]$past,[bool]$timeOnly) {
@@ -570,16 +605,26 @@ function MovePendingScheduleOrder($sheet,$cfg,$state,[object[]]$pending){
      $blocked=$true;break
     }
     $addresses[$address]=$true
-    $entry=@{value=$cell.Value2}
+    $rawVal=$cell.Value2
+    if($null -ne $rawVal -and -not ($rawVal -is [double] -or $rawVal -is [string] -or $rawVal -is [bool])){$blocked=$true;break}
+    $entry=@{value=$rawVal}
     $range=$cell
     if($cell.MergeCells){$range=$cell.MergeArea}
-    if($null -eq $range.Font.Strikethrough){$blocked=$true;break}
+    if($null -eq $range.Font.Strikethrough -or $range.Font.Strikethrough -is [DBNull]){$blocked=$true;break}
     $entry.strike=[bool]$range.Font.Strikethrough
-    if($col -eq $machineCol){$entry.alignment=$range.HorizontalAlignment}
+    if($col -eq $machineCol){
+     $align=$range.HorizontalAlignment
+     if($null -eq $align -or $align -is [DBNull]){$blocked=$true;break}
+     $entry.alignment=$align
+    }
     if($colorColumns -contains $col){
-     $entry.pattern=$range.Interior.Pattern
-     $entry.background=$range.Interior.Color
-     $entry.foreground=$range.Font.Color
+     $pat=$range.Interior.Pattern
+     $bg=$range.Interior.Color
+     $fg=$range.Font.Color
+     if($null -eq $pat -or $pat -is [DBNull] -or $null -eq $bg -or $bg -is [DBNull] -or $null -eq $fg -or $fg -is [DBNull]){$blocked=$true;break}
+     $entry.pattern=$pat
+     $entry.background=$bg
+     $entry.foreground=$fg
     }
     $cells[$col]=$entry
    }
@@ -745,12 +790,52 @@ $changed = 0
 $added = 0
 $kept = 0
 $now = [DateTime]::Now
-$ordered = @($usable | Sort-Object scheduled_at)
+$ordered = @($usable | Sort-Object { [datetime]::Parse([string]$_.scheduled_at, [Globalization.CultureInfo]::InvariantCulture) })
 $started=[DateTime]::UtcNow
 $colored=0
 $nextSlot=@{mold=0;color=0}
 $script:DryingBadgeCount=0
 $script:ReorderedCount=0
+if (-not ('ExcelDailyComMessageFilter' -as [type])) {
+ Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+[ComImport, Guid("00000016-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IExcelDailyOleMessageFilter {
+ [PreserveSig] int HandleInComingCall(int dwCallType, IntPtr hTaskCaller, int dwTickCount, IntPtr lpInterfaceInfo);
+ [PreserveSig] int RetryRejectedCall(IntPtr hTaskCallee, int dwTickCount, int dwRejectType);
+ [PreserveSig] int MessagePending(IntPtr hTaskCallee, int dwTickCount, int dwPendingType);
+}
+public sealed class ExcelDailyComMessageFilter : IExcelDailyOleMessageFilter {
+ [DllImport("Ole32.dll")]
+ private static extern int CoRegisterMessageFilter(IExcelDailyOleMessageFilter newFilter, out IExcelDailyOleMessageFilter oldFilter);
+ [ThreadStatic] private static IExcelDailyOleMessageFilter _prior;
+ [ThreadStatic] private static bool _registered;
+ public static void Register() {
+  if (_registered || System.Threading.Thread.CurrentThread.GetApartmentState() != System.Threading.ApartmentState.STA) return;
+  IExcelDailyOleMessageFilter old;
+  if (CoRegisterMessageFilter(new ExcelDailyComMessageFilter(), out old) == 0) { _prior = old; _registered = true; }
+ }
+ public static void Revoke() {
+  if (!_registered) return;
+  IExcelDailyOleMessageFilter dummy;
+  CoRegisterMessageFilter(_prior, out dummy);
+  _prior = null; _registered = false;
+ }
+ int IExcelDailyOleMessageFilter.HandleInComingCall(int dwCallType, IntPtr hTaskCaller, int dwTickCount, IntPtr lpInterfaceInfo) { return 0; }
+ int IExcelDailyOleMessageFilter.RetryRejectedCall(IntPtr hTaskCallee, int dwTickCount, int dwRejectType) {
+  if (dwRejectType == 2 && dwTickCount < 5000) return 120;
+  return -1;
+ }
+ int IExcelDailyOleMessageFilter.MessagePending(IntPtr hTaskCallee, int dwTickCount, int dwPendingType) { return 2; }
+}
+'@
+}
+[ExcelDailyComMessageFilter]::Register()
+if (-not $excel.Ready) {
+ [ExcelDailyComMessageFilter]::Revoke()
+ throw 'Excelが編集中のため更新できません。セルの編集を確定してから再実行してください。'
+}
 # Persistent fail-closed marker before workbook mutations. Only success removes it.
 [IO.File]::WriteAllText($recoveryLock,("$($book.FullName)`r`n$($sheet.Name)`r`n$([DateTime]::Now.ToString('o'))"),(New-Object System.Text.UTF8Encoding($false)))
 $screenChanged=$false;$eventsChanged=$false
@@ -848,18 +933,18 @@ foreach ($e in $ordered) {
         Write-Output "空き行がありません: 種別=$kind / 設備=$machine"
         continue
     }
-    PutValue $sheet $machineCol $emptyRow $machine
+    PutTextValue $sheet $machineCol $emptyRow $machine
     PutValue $sheet $timeCol $emptyRow (EventTime $e)
     SetScheduleBadges $sheet $machineCol $emptyRow $e $cfg
     if ($kind -eq "color") {
         if ($e.color_before) {
             $col=[string]$cfg.columns.color_before
-            PutValue $sheet $col $emptyRow ([string]$e.color_before)
+            PutTextValue $sheet $col $emptyRow ([string]$e.color_before)
             if (PaintColorCell $sheet $col $emptyRow ([string]$e.color_before)) { $colored++ }
         }
         if ($e.color_after) {
             $col=[string]$cfg.columns.color_after
-            PutValue $sheet $col $emptyRow ([string]$e.color_after)
+            PutTextValue $sheet $col $emptyRow ([string]$e.color_after)
             if (PaintColorCell $sheet $col $emptyRow ([string]$e.color_after)) { $colored++ }
         }
     }
@@ -871,9 +956,15 @@ $visiblePending=@(GetVisiblePendingSchedule $sheet $cfg $state $book $start $ste
 MovePendingScheduleOrder $sheet $cfg $state $visiblePending
 RemoveUnusedScheduleBadges $sheet ([string]$cfg.columns.mold_machine) $start $step $count
 RemoveUnusedScheduleBadges $sheet ([string]$cfg.columns.color_machine) $start $step $count
-# Save only our local row-ID state. The open Excel workbook remains unsaved.
+# Save only our local row-ID state atomically. The open Excel workbook remains unsaved.
 $json = ConvertTo-Json -InputObject $state -Depth 5
-[System.IO.File]::WriteAllText($metadataPath, $json, (New-Object System.Text.UTF8Encoding($false)))
+$tmpState = Join-Path $baseDir ('excel-daily-state-' + [guid]::NewGuid().ToString('N') + '.tmp')
+try {
+ [System.IO.File]::WriteAllText($tmpState, $json, (New-Object System.Text.UTF8Encoding($false)))
+ [System.IO.File]::Copy($tmpState, $metadataPath, $true)
+} finally {
+ Remove-Item -LiteralPath $tmpState -Force -ErrorAction SilentlyContinue
+}
 if ($cfg.update_policy.save_automatically -eq $true) {
     $book.Save()
 }
@@ -881,6 +972,7 @@ Remove-Item -LiteralPath $recoveryLock -ErrorAction Stop
 $elapsed=[int]([DateTime]::UtcNow-$started).TotalMilliseconds
 Write-Output "date_offset=$DateOffset; shift=$Shift; Workbook=$($book.Name); sheet=$($sheet.Name); added=$added; updated_times=$changed; colored_cells=$colored; preserved=$kept; drying_badges=$script:DryingBadgeCount; reordered=$script:ReorderedCount; elapsed_ms=$elapsed; excel_saved=$($cfg.update_policy.save_automatically)"
 } finally {
+ [ExcelDailyComMessageFilter]::Revoke()
  if($eventsChanged){try{$excel.EnableEvents=$oldEvents}catch{}}
  if($screenChanged){try{$excel.ScreenUpdating=$oldScreen}catch{}}
  $script:ExcelCells.Clear()

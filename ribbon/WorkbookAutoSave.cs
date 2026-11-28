@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
 using ExcelDna.Integration;
@@ -40,7 +41,8 @@ namespace ExcelDailyRibbon
 
         private static bool WritesBlocked()
         {
-            return StatusUi.IsBusy || File.Exists(Path.Combine(_directory, "excel-daily-busy.lock"))
+            // Respect excel-daily-busy.lock and excel-daily-recovery.lock.
+            return StatusUi.IsBusy || StatusUi.HasLiveBusyLock(_directory)
                 || File.Exists(Path.Combine(_directory, "excel-daily-recovery.lock"));
         }
 
@@ -75,27 +77,39 @@ namespace ExcelDailyRibbon
             dynamic app = ExcelDnaUtil.Application;
             if (!Convert.ToBoolean(app.Ready)) return;
             dynamic books = app.Workbooks;
-            int count = Convert.ToInt32(books.Count);
             int saved = 0, failed = 0;
-            for (int i = 1; i <= count; i++)
+            try
             {
-                if (WritesBlocked()) return;
-                try
+                int count = Convert.ToInt32(books.Count);
+                for (int i = 1; i <= count; i++)
                 {
-                    dynamic book = books.Item(i);
-                    string name = Convert.ToString(book.Name);
-                    if (!options.Matches(name)) continue;
-                    string path = Convert.ToString(book.FullName);
-                    if (!options.ShouldSave(name, Convert.ToBoolean(book.Saved),
-                        Convert.ToBoolean(book.ReadOnly), Convert.ToBoolean(book.MultiUserEditing),
-                        Path.IsPathRooted(path) && File.Exists(path))) continue;
                     if (WritesBlocked()) return;
-                    // Normal Excel Save, not SaveAs. Preserve native conflict handling.
-                    book.Save();
-                    if (Convert.ToBoolean(book.Saved)) saved++;
-                    else failed++;
+                    dynamic book = null;
+                    try
+                    {
+                        book = books.Item(i);
+                        string name = Convert.ToString(book.Name);
+                        if (!options.Matches(name)) continue;
+                        string path = Convert.ToString(book.FullName);
+                        if (!options.ShouldSave(name, Convert.ToBoolean(book.Saved),
+                            Convert.ToBoolean(book.ReadOnly), Convert.ToBoolean(book.MultiUserEditing),
+                            Path.IsPathRooted(path) && File.Exists(path))) continue;
+                        if (WritesBlocked()) return;
+                        // Normal Excel Save, not SaveAs. Preserve native conflict handling.
+                        book.Save();
+                        if (Convert.ToBoolean(book.Saved)) saved++;
+                        else failed++;
+                    }
+                    catch (Exception ex) { failed++; StatusUi.ShowError(ex); }
+                    finally
+                    {
+                        if (book != null && Marshal.IsComObject(book)) Marshal.ReleaseComObject(book);
+                    }
                 }
-                catch (Exception ex) { failed++; StatusUi.ShowError(ex); }
+            }
+            finally
+            {
+                if (books != null && Marshal.IsComObject(books)) Marshal.ReleaseComObject(books);
             }
             Schedule.Completed(DateTime.UtcNow);
             if (failed > 0) StatusUi.Show("Excel Daily: 自動保存 " + saved + "件、失敗 " + failed + "件。");

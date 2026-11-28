@@ -2,17 +2,22 @@
  [Parameter(Mandatory=$true)][string]$Executable,
  [Parameter(Mandatory=$true)][string]$Archive,
  [int]$PidToWait=0,
- [Parameter(Mandatory=$true)][string]$TargetVersion
+ [Parameter(Mandatory=$true)][string]$TargetVersion,
+ [string]$ExpectedSha256=''
 )
 $ErrorActionPreference='Stop'
 $dir=Split-Path -Parent $Executable
 $log=Join-Path $dir 'excel-daily-updater.log'
 . (Join-Path $PSScriptRoot 'update_safety.ps1')
-function Log([string]$msg){Add-Content -LiteralPath $log -Value ((Get-Date).ToString('s')+' '+$msg)}
+function Log([string]$msg){Add-Content -LiteralPath $log -Value ((Get-Date).ToString('s')+' '+$msg) -Encoding UTF8}
 function UpdateStatus([string]$state,[string]$message){
  try{
   $json=@{state=$state;message=$message;updated_ms=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()}|ConvertTo-Json -Compress
-  [IO.File]::WriteAllText((Join-Path $dir 'excel-daily-status.json'),$json,([Text.UTF8Encoding]::new($false)))
+  $statusPath=Join-Path $dir 'excel-daily-status.json'
+  $tmp=Join-Path $dir ('excel-daily-status-'+[guid]::NewGuid().ToString('N')+'.tmp')
+  [IO.File]::WriteAllText($tmp,$json,([Text.UTF8Encoding]::new($false)))
+  [IO.File]::Copy($tmp,$statusPath,$true)
+  Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
  }catch{Log ('STATUS_WRITE_FAILED '+$_.Exception.Message)}
 }
 function RestartAgent {
@@ -28,8 +33,36 @@ $copyStarted=$false
 $copied=@()
 try {
  if($TargetVersion -notmatch '^\d+\.\d+\.\d+$'){throw '更新バージョンが正しくありません。'}
- New-Item -ItemType Directory -Path $stage -Force|Out-Null
- Expand-Archive -LiteralPath $Archive -DestinationPath $stage -Force
+ if(!(Test-Path -LiteralPath $Archive)){throw '更新ZIPファイルが見つかりません。'}
+ $archiveLen=(Get-Item -LiteralPath $Archive).Length
+ if($archiveLen -lt 100KB -or $archiveLen -gt 40MB){throw '更新ZIPファイルのサイズが不正です。'}
+ if($ExpectedSha256){
+  if($ExpectedSha256 -notmatch '^[A-Fa-f0-9]{64}$'){throw 'チェックサムの形式が不正です。'}
+  if((Get-FileHash -Algorithm SHA256 -LiteralPath $Archive).Hash -ine $ExpectedSha256){throw '更新ファイルのSHA256検証に失敗しました。'}
+ }
+ if(Test-Path -LiteralPath $stage){throw 'Staging directory already exists'}
+ New-Item -ItemType Directory -Path $stage | Out-Null
+ Add-Type -AssemblyName System.IO.Compression.FileSystem
+ $stageRoot=[IO.Path]::GetFullPath($stage).TrimEnd('\')+'\'
+ $zip=[IO.Compression.ZipFile]::OpenRead($Archive)
+ try{
+  if($zip.Entries.Count -gt 200){throw 'Too many ZIP entries'}
+  $totalBytes=0L
+  foreach($entry in $zip.Entries){
+   $name=[string]$entry.FullName
+   if($name -match '(^|[\\/])\.\.([\\/]|$)|[\\/]|^[A-Za-z]:'){throw "Unsafe ZIP entry: $name"}
+   if($name -notmatch '^(?:[A-Za-z0-9_.-]+\.ps1|excel-daily\.exe|excel-daily-settings\.exe|ExcelDailyRibbon(?:64)?\.xll|ribbon-version\.json|settings\.json|events\.example\.json|README\.md)$'){
+    throw "Unexpected ZIP entry: $name"
+   }
+   $totalBytes+=$entry.Length
+   if($totalBytes -gt 150MB){throw 'ZIP uncompressed size too large'}
+   $destFull=[IO.Path]::GetFullPath((Join-Path $stage $name))
+   if(-not $destFull.StartsWith($stageRoot,[StringComparison]::OrdinalIgnoreCase)){throw "Unsafe ZIP destination: $name"}
+   $inStream=$entry.Open()
+   $outStream=[IO.File]::Create($destFull)
+   try{$inStream.CopyTo($outStream)}finally{$inStream.Dispose();$outStream.Dispose()}
+  }
+ }finally{$zip.Dispose()}
  # Validate every binary BEFORE stopping the running Agent.
  $required=@('excel-daily.exe','excel-daily-settings.exe','ExcelDailyRibbon.xll','ExcelDailyRibbon64.xll','install-ribbon.ps1')
  foreach($name in $required){
@@ -58,10 +91,13 @@ try {
   $target=Join-Path $dir $name
   $live=@(Get-CimInstance Win32_Process -Filter ("name='"+$name+"'") -ErrorAction SilentlyContinue |
     Where-Object{$_.ExecutablePath -ieq $target})
-  foreach($p in $live){Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop}
+  foreach($p in $live){
+   Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+   Wait-Process -Id $p.ProcessId -Timeout 15 -ErrorAction SilentlyContinue
+  }
  }
  $stopped=$true
- Start-Sleep -Milliseconds 500
+ Start-Sleep -Milliseconds 300
  # Check again to avoid installing when Excel reopened in the meantime.
  $reason=Get-ExcelDailyUpdateBlocker -Root $dir
  if($reason){
@@ -135,8 +171,9 @@ try {
  Remove-Item -LiteralPath $stage -Force -Recurse -ErrorAction SilentlyContinue
  Remove-Item -LiteralPath $backup -Force -Recurse -ErrorAction SilentlyContinue
  if($Archive -and (Test-Path -LiteralPath $Archive)){
-  $parent=Split-Path -Parent $Archive
-  if((Split-Path -Leaf $parent) -like 'excel-daily-upgrade-*'){
+  $tempRoot=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')+'\'
+  $parent=[IO.Path]::GetFullPath((Split-Path -Parent $Archive))
+  if($parent.StartsWith($tempRoot,[StringComparison]::OrdinalIgnoreCase) -and (Split-Path -Leaf $parent) -like 'excel-daily-upgrade-*'){
    Remove-Item -LiteralPath $parent -Force -Recurse -ErrorAction SilentlyContinue
   }
  }

@@ -6,6 +6,8 @@
  [string]$StatusFile=''
 )
 $ErrorActionPreference='Stop'
+[Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false)
+$OutputEncoding=[Console]::OutputEncoding
 $ProgressPreference='SilentlyContinue'
 . (Join-Path $PSScriptRoot 'update_safety.ps1')
 $stage='';$handedOff=$false
@@ -27,6 +29,9 @@ try {
  $zipAsset=@($release.assets|Where-Object{$_.name -eq 'excel-daily-windows.zip'})|Select-Object -First 1
  $shaAsset=@($release.assets|Where-Object{$_.name -eq 'excel-daily-windows.zip.sha256'})|Select-Object -First 1
  if(!$zipAsset -or !$shaAsset){throw '更新ファイルまたはチェックサムが見つかりません。'}
+ $trustedPrefix='https://github.com/maedandori/excel-daily/releases/download/'
+ if(([string]$zipAsset.browser_download_url) -notlike ($trustedPrefix+'*') -or ([string]$shaAsset.browser_download_url) -notlike ($trustedPrefix+'*')){throw '更新ファイルの配信元URLが不正です。'}
+ if([long]$zipAsset.size -lt 100KB -or [long]$zipAsset.size -gt 40MB -or [long]$shaAsset.size -lt 64 -or [long]$shaAsset.size -gt 4KB){throw '更新ファイルのサイズが不正です。'}
  $stage=Join-Path ([IO.Path]::GetTempPath()) ('excel-daily-upgrade-'+[guid]::NewGuid().ToString('N'))
  New-Item -ItemType Directory -Path $stage -Force|Out-Null
  $zip=Join-Path $stage 'excel-daily-windows.zip'
@@ -44,7 +49,7 @@ try {
  if(!(Test-Path -LiteralPath $installer)){throw '更新用プログラムが見つかりません。'}
  $args=@('-NoProfile','-NonInteractive','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',('"' + $installer + '"'),
   '-Executable',('"' + $Executable + '"'),'-Archive',('"' + $zip + '"'),
-  '-PidToWait',[string]$PidToWait,'-TargetVersion',$version)
+  '-PidToWait',[string]$PidToWait,'-TargetVersion',$version,'-ExpectedSha256',$expected)
  Start-Process -FilePath powershell.exe -ArgumentList $args -WindowStyle Hidden|Out-Null
  $handedOff=$true
  Status 'UPDATE_READY'

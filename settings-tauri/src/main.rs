@@ -14,10 +14,87 @@ const BRIDGE:&str=include_str!("agent-bridge.ps1");
 
 #[derive(Debug,Clone,Serialize,Deserialize)]
 struct SettingsForm {
-    name:String, url:String, token:String, pattern:String, selected:String,
-    day_sheet:String, night_sheet:String, startup:bool, auto_update:bool, remote_update:bool,
+    name:String, url:String, #[serde(default)] token:String, #[serde(default)] token_configured:bool,
+    pattern:String, selected:String, day_sheet:String, night_sheet:String,
+    startup:bool, auto_update:bool, remote_update:bool,
     day:String, night:String, refresh:String, tomorrow:String,
-    auto_save:bool, auto_save_minutes:u32,
+    auto_save:bool, auto_save_minutes:Option<i64>,
+}
+#[cfg(windows)]
+mod dpapi {
+    use std::{ffi::c_void,ptr};
+    #[repr(C)]
+    struct DataBlob { cb_data:u32, pb_data:*mut u8 }
+    #[link(name="crypt32")]
+    extern "system" {
+        fn CryptProtectData(data:*const DataBlob,desc:*const u16,entropy:*const DataBlob,reserved:*mut c_void,prompt:*const c_void,flags:u32,out:*mut DataBlob)->i32;
+    }
+    #[link(name="kernel32")]
+    extern "system" { fn LocalFree(mem:*mut c_void)->*mut c_void; }
+    fn b64(bytes:&[u8])->String{
+        const T:&[u8]=b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out=String::with_capacity(bytes.len().div_ceil(3)*4);
+        for chunk in bytes.chunks(3){
+            let b0=chunk[0] as u32;
+            let b1=chunk.get(1).copied().unwrap_or(0) as u32;
+            let b2=chunk.get(2).copied().unwrap_or(0) as u32;
+            let n=(b0<<16)|(b1<<8)|b2;
+            out.push(T[((n>>18)&63) as usize] as char);
+            out.push(T[((n>>12)&63) as usize] as char);
+            out.push(if chunk.len()>1{T[((n>>6)&63) as usize] as char}else{'='});
+            out.push(if chunk.len()>2{T[(n&63) as usize] as char}else{'='});
+        }
+        out
+    }
+    pub fn protect(raw:&str)->Result<String,String>{
+        let trimmed=raw.trim();
+        if trimmed.is_empty()||trimmed.starts_with("dpapi:"){return Ok(trimmed.to_owned())}
+        let bytes=trimmed.as_bytes();
+        let input=DataBlob{cb_data:bytes.len() as u32,pb_data:bytes.as_ptr() as *mut u8};
+        let mut out=DataBlob{cb_data:0,pb_data:ptr::null_mut()};
+        let ok=unsafe{CryptProtectData(&input,ptr::null(),ptr::null(),ptr::null_mut(),ptr::null(),0x1,&mut out)};
+        if ok==0{return Err("認証キーを暗号化できませんでした。".into())}
+        let enc=unsafe{std::slice::from_raw_parts(out.pb_data,out.cb_data as usize).to_vec()};
+        unsafe{LocalFree(out.pb_data as *mut c_void);}
+        Ok(format!("dpapi:{}",b64(&enc)))
+    }
+}
+#[cfg(not(windows))]
+mod dpapi {
+    pub fn protect(raw:&str)->Result<String,String>{Ok(raw.trim().to_owned())}
+}
+fn canonical_hotkey(raw:&str)->String{
+    let t=raw.trim();
+    if let Some((mods,key))=t.rsplit_once('+'){
+        if key.len()==1&&key.chars().all(|c|c.is_ascii_digit()){
+            let mut has_ctrl=false;let mut has_shift=false;
+            for part in mods.split('+'){
+                if part.eq_ignore_ascii_case("ctrl"){has_ctrl=true;}
+                else if part.eq_ignore_ascii_case("shift"){has_shift=true;}
+                else{return t.to_owned();}
+            }
+            if has_ctrl&&has_shift{return format!("Ctrl+Shift+{key}")}
+            if has_ctrl{return format!("Ctrl+{key}")}
+        }
+    }
+    t.to_owned()
+}
+fn is_allowed_api_url(raw:&str)->bool{
+    let Ok(address)=url::Url::parse(raw.trim()) else{return false};
+    if address.scheme()!="https"||address.path()!="/api/excel-daily/events"||
+        !address.username().is_empty()||address.password().is_some()||address.query().is_some()||address.fragment().is_some(){
+        return false
+    }
+    match address.host(){
+        Some(url::Host::Domain(d))=>{
+            let h=d.to_ascii_lowercase();
+            !(h=="localhost"||h.ends_with(".localhost")||h.ends_with(".local")||h.ends_with(".internal"))
+        }
+        Some(url::Host::Ipv4(v4))=>{
+            !(v4.is_loopback()||v4.is_private()||v4.is_link_local()||v4.is_unspecified()||v4.is_broadcast()||v4.octets()[0]==0)
+        }
+        _=>false
+    }
 }
 fn dir()->Result<PathBuf,String>{
     env::current_exe().map_err(|_|"設定の保存先を取得できません。".to_owned())?
@@ -49,14 +126,18 @@ fn to_form(v:&Value)->SettingsForm{
     let d=|g:&str,k:&str|text_at(&defaults,g,k,"");
     SettingsForm{
         name:text_at(v,"agent","display_name",""),url:text_at(v,"data_source","api_url",&d("data_source","api_url")),
-        token:text_at(v,"data_source","api_token",""),pattern:text_at(v,"workbook","filename_pattern",&d("workbook","filename_pattern")),
+        token:String::new(),token_configured:!text_at(v,"data_source","api_token","").trim().is_empty(),
+        pattern:text_at(v,"workbook","filename_pattern",&d("workbook","filename_pattern")),
         selected:text_at(v,"workbook","selected_workbook",""),day_sheet:text_at(v,"sheets","day",&d("sheets","day")),
         night_sheet:text_at(v,"sheets","night",&d("sheets","night")),
         startup:flag(v,"app","start_with_windows",false),auto_update:flag(v,"auto_update","enabled",true),
         auto_save:flag(v,"auto_save","enabled",true),
-        auto_save_minutes:v["auto_save"]["interval_minutes"].as_u64().filter(|n|(1..=120).contains(n)).unwrap_or(15) as u32,
-        remote_update:flag(v,"agent","remote_update",true),day:text_at(v,"hotkeys","day","Ctrl+1"),
-        night:text_at(v,"hotkeys","night","Ctrl+2"),refresh:text_at(v,"hotkeys","refresh","Ctrl+3"),tomorrow:text_at(v,"hotkeys","tomorrow","Ctrl+4")
+        auto_save_minutes:Some(v["auto_save"]["interval_minutes"].as_u64().filter(|n|(1..=120).contains(n)).unwrap_or(15) as i64),
+        remote_update:flag(v,"agent","remote_update",true),
+        day:canonical_hotkey(&text_at(v,"hotkeys","day","Ctrl+1")),
+        night:canonical_hotkey(&text_at(v,"hotkeys","night","Ctrl+2")),
+        refresh:canonical_hotkey(&text_at(v,"hotkeys","refresh","Ctrl+3")),
+        tomorrow:canonical_hotkey(&text_at(v,"hotkeys","tomorrow","Ctrl+4"))
     }
 }
 fn patch(v:&mut Value,group:&str,key:&str,value:Value)->Result<(),String>{
@@ -67,23 +148,30 @@ fn patch(v:&mut Value,group:&str,key:&str,value:Value)->Result<(),String>{
     Ok(())
 }
 fn merge_form(mut v:Value,f:&SettingsForm)->Result<Value,String>{
-    let address=url::Url::parse(f.url.trim()).map_err(|_|"Worker API URL が正しくありません。")?;
-    if address.scheme()!="https"||address.host_str().is_none()||address.path()!="/api/excel-daily/events"||
-        !address.username().is_empty()||address.password().is_some()||address.query().is_some()||address.fragment().is_some(){
-        return Err("Worker API URL は HTTPS の /api/excel-daily/events を指定してください。".into())
+    if !is_allowed_api_url(&f.url){
+        return Err("Worker API URL は安全な HTTPS の /api/excel-daily/events を指定してください。".into())
     }
     let keys=hotkeys::HotkeyOptions{day:f.day.clone(),night:f.night.clone(),refresh:f.refresh.clone(),tomorrow:f.tomorrow.clone()};
     hotkeys::validate_hotkeys(&keys).map_err(|_|"ショートカットキーが重複しているか無効です。")?;
-    if !(1..=120).contains(&f.auto_save_minutes){return Err("自動保存間隔は1〜120分で指定してください。".into())}
+    let minutes=f.auto_save_minutes.filter(|m|(1..=120).contains(m)).ok_or("自動保存間隔は1〜120分で指定してください。")?;
     for (group,key,value) in [
-        ("auto_save","enabled",json!(f.auto_save)),("auto_save","interval_minutes",json!(f.auto_save_minutes)),
+        ("auto_save","enabled",json!(f.auto_save)),("auto_save","interval_minutes",json!(minutes)),
         ("agent","display_name",json!(f.name.trim())),("agent","remote_update",json!(f.remote_update)),
-        ("data_source","api_url",json!(f.url.trim())),("data_source","api_token",json!(f.token.trim())),
+        ("data_source","api_url",json!(f.url.trim())),
         ("workbook","filename_pattern",json!(f.pattern)),("workbook","selected_workbook",json!(f.selected)),
         ("sheets","day",json!(f.day_sheet)),("sheets","night",json!(f.night_sheet)),
         ("app","start_with_windows",json!(f.startup)),("auto_update","enabled",json!(f.auto_update)),
-        ("hotkeys","day",json!(f.day)),("hotkeys","night",json!(f.night)),("hotkeys","refresh",json!(f.refresh)),("hotkeys","tomorrow",json!(f.tomorrow))
+        ("hotkeys","day",json!(canonical_hotkey(&f.day))),("hotkeys","night",json!(canonical_hotkey(&f.night))),
+        ("hotkeys","refresh",json!(canonical_hotkey(&f.refresh))),("hotkeys","tomorrow",json!(canonical_hotkey(&f.tomorrow)))
     ]{patch(&mut v,group,key,value)?}
+    if !f.token.trim().is_empty(){
+        patch(&mut v,"data_source","api_token",json!(dpapi::protect(f.token.trim())?))?;
+    }else{
+        let existing=text_at(&v,"data_source","api_token","");
+        if !existing.trim().is_empty()&&!existing.trim().starts_with("dpapi:"){
+            patch(&mut v,"data_source","api_token",json!(dpapi::protect(existing.trim())?))?;
+        }
+    }
     Ok(v)
 }
 fn set_startup(root:&Path,enabled:bool)->Result<(),String>{
@@ -153,8 +241,9 @@ fn update_state(tracker:tauri::State<'_,Tracker>)->Result<String,String>{
 }
 #[tauri::command]
 fn close_after_update(app:tauri::AppHandle,tracker:tauri::State<'_,Tracker>)->Result<(),String>{
-    let slot=tracker.0.lock().map_err(|_|"更新状態を取得できません。")?;
+    let mut slot=tracker.0.lock().map_err(|_|"更新状態を取得できません。")?;
     if slot.as_ref().and_then(|u|fs::read_to_string(&u.path).ok()).is_some_and(|s|s.trim()=="UPDATE_READY"){
+        if let Some(u)=slot.take(){let _=fs::remove_file(u.path);}
         app.exit(0);Ok(())
     }else{Err("更新準備が完了していません。".into())}
 }
@@ -182,24 +271,34 @@ mod tests{
     use super::*;
     #[test]fn config_roundtrip_preserves_unknown_settings(){
         let mut v=parse_cfg(DEFAULT_CFG).unwrap();v["rows"]["step"]=json!(3);v["extra"]=json!({"value":42});
-        let mut f=to_form(&v);f.name="第一工場".into();f.token="local-only".into();
+        v["data_source"]["api_token"]=json!("stored-secret");
+        let mut f=to_form(&v);assert!(f.token.is_empty());assert!(f.token_configured);
+        f.name="第一工場".into();
+        let kept=merge_form(v.clone(),&f).unwrap();
+        assert!(!kept["data_source"]["api_token"].as_str().unwrap().is_empty());
+        f.token="local-only".into();
         let result=merge_form(v,&f).unwrap();assert_eq!(result["rows"]["step"],3);assert_eq!(result["extra"]["value"],42);
-        assert_eq!(result["agent"]["display_name"],"第一工場");assert_eq!(result["data_source"]["api_token"],"local-only");
+        assert_eq!(result["agent"]["display_name"],"第一工場");
+        assert!(!result["data_source"]["api_token"].as_str().unwrap().is_empty());
     }
     #[test]fn autosave_defaults_and_roundtrip(){
         let mut v=parse_cfg(DEFAULT_CFG).unwrap();
         v.as_object_mut().unwrap().remove("auto_save");
         let mut f=to_form(&v);
-        assert!(f.auto_save);assert_eq!(f.auto_save_minutes,15);
-        f.auto_save=false;f.auto_save_minutes=30;
+        assert!(f.auto_save);assert_eq!(f.auto_save_minutes,Some(15));
+        f.auto_save=false;f.auto_save_minutes=Some(30);
         let result=merge_form(v.clone(),&f).unwrap();
         assert_eq!(result["auto_save"]["enabled"],false);
         assert_eq!(result["auto_save"]["interval_minutes"],30);
-        f.auto_save_minutes=0;assert!(merge_form(v,&f).is_err());
+        f.auto_save_minutes=Some(0);assert!(merge_form(v.clone(),&f).is_err());
+        f.auto_save_minutes=None;assert!(merge_form(v,&f).is_err());
     }
     #[test]fn invalid_inputs_are_rejected(){
         let v=parse_cfg(DEFAULT_CFG).unwrap();let mut f=to_form(&v);f.tomorrow=f.day.clone();
-        assert!(merge_form(v.clone(),&f).is_err());f.tomorrow="Ctrl+4".into();f.url="http://example.com/api/excel-daily/events".into();
-        assert!(merge_form(v,&f).is_err());
+        assert!(merge_form(v.clone(),&f).is_err());f.tomorrow="Ctrl+4".into();
+        for bad in ["http://example.com/api/excel-daily/events","https://127.0.0.1/api/excel-daily/events","https://localhost/api/excel-daily/events","https://192.168.1.10/api/excel-daily/events"]{
+            f.url=bad.into();assert!(merge_form(v.clone(),&f).is_err());
+        }
+        assert_eq!(canonical_hotkey("ctrl+shift+3"),"Ctrl+Shift+3");
     }
 }

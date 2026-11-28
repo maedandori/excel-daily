@@ -12,7 +12,6 @@ function WriteSettingsLog([string]$event,[string]$detail=''){
  $entry="$stamp pid=$PID $event $detail"
  $paths=@($log)
  if($env:LOCALAPPDATA){$paths+=Join-Path $env:LOCALAPPDATA 'ExcelDaily\settings.log'}
- if($env:TEMP){$paths+=Join-Path $env:TEMP 'excel-daily-settings.log'}
  foreach($target in $paths){
   try{
    $parent=Split-Path -Parent $target
@@ -72,9 +71,11 @@ try {
  }
  $header=LabelAt ("設定 v"+$version+"     |     エージェント "+$agentVersion) 20 14 665
  $header.Font=[System.Drawing.Font]::new('Segoe UI',11,[System.Drawing.FontStyle]::Bold)
+ $storedToken=[string]$script:Cfg.data_source.api_token
+ $tokenConfigured=-not [string]::IsNullOrWhiteSpace($storedToken)
  TextAt '端末名' 'name' ([string]$script:Cfg.agent.display_name) 55
  TextAt 'Worker API URL' 'url' ([string]$script:Cfg.data_source.api_url) 90
- TextAt 'Excel Daily 認証キー' 'token' ([string]$script:Cfg.data_source.api_token) 125 $true
+ TextAt ($(if($tokenConfigured){'認証キー（設定済）'}else{'Excel Daily 認証キー'})) 'token' '' 125 $true
  TextAt 'ファイル名のパターン' 'pattern' ([string]$script:Cfg.workbook.filename_pattern) 160
  TextAt '更新対象ファイル' 'selected' ([string]$script:Cfg.workbook.selected_workbook) 195
  TextAt '昼勤シート' 'daySheet' ([string]$script:Cfg.sheets.day) 230
@@ -92,6 +93,12 @@ try {
  $choices=[System.Collections.Generic.List[string]]::new()
  foreach($i in 0..9){$choices.Add("Ctrl+$i")}
  foreach($i in 0..9){$choices.Add("Ctrl+Shift+$i")}
+ function CanonicalHotkey([string]$raw){
+  $t=([string]$raw).Trim()
+  if($t -match '^(?i)ctrl\+shift\+(\d)$'){return 'Ctrl+Shift+'+$matches[1]}
+  if($t -match '^(?i)ctrl\+(\d)$'){return 'Ctrl+'+$matches[1]}
+  return $t
+ }
  function HotkeyAt([string]$label,[string]$key,[int]$x,[int]$y){
   $null=LabelAt $label $x $y 145
   $combo=[System.Windows.Forms.ComboBox]::new()
@@ -99,7 +106,7 @@ try {
   $combo.Location=[System.Drawing.Point]::new(($x+145),$y)
   $combo.Size=[System.Drawing.Size]::new(164,27)
   $combo.Items.AddRange([object[]]$choices.ToArray())
-  $combo.SelectedItem=[string]$script:Cfg.hotkeys.$key
+  $combo.SelectedItem=CanonicalHotkey ([string]$script:Cfg.hotkeys.$key)
   if($combo.SelectedIndex -lt 0){throw "ショートカットキーの設定が正しくありません: $key"}
   $form.Controls.Add($combo);$script:HotkeyFields[$key]=$combo
  }
@@ -119,8 +126,31 @@ try {
  $script:AutoSaveMinutes.Location=[System.Drawing.Point]::new(400,650)
  $form.Controls.Add($script:AutoSaveMinutes)
  $script:Status=LabelAt '準備完了：保存後にエージェントを再起動してください。' 20 709 665
+ function Test-AllowedApiUri([string]$raw){
+  try{
+   $u=[System.Uri]$raw
+   if(-not $u.IsAbsoluteUri -or $u.Scheme -ne 'https' -or $u.AbsolutePath -ne '/api/excel-daily/events' -or $u.UserInfo -or $u.Query -or $u.Fragment){return $false}
+   $h=$u.DnsSafeHost.ToLowerInvariant()
+   if(!$h -or $h -eq 'localhost' -or $h.EndsWith('.localhost') -or $h.EndsWith('.local') -or $h.EndsWith('.internal') -or $h.Contains(':')){return $false}
+   $ip=$null
+   if([System.Net.IPAddress]::TryParse($h,[ref]$ip)){
+    $b=$ip.GetAddressBytes()
+    if($b.Length -ne 4 -or $b[0] -eq 0 -or $b[0] -eq 10 -or $b[0] -eq 127 -or ($b[0] -eq 169 -and $b[1] -eq 254) -or ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) -or ($b[0] -eq 192 -and $b[1] -eq 168) -or ($b[0] -eq 255 -and $b[1] -eq 255)){return $false}
+   }
+   return $true
+  }catch{return $false}
+ }
+ function Protect-ExcelDailyToken([string]$raw){
+  $t=$raw.Trim()
+  if(!$t -or $t.StartsWith('dpapi:')){return $t}
+  Add-Type -AssemblyName System.Security
+  $bytes=[Text.Encoding]::UTF8.GetBytes($t)
+  $enc=[System.Security.Cryptography.ProtectedData]::Protect($bytes,$null,[System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+  return 'dpapi:'+[Convert]::ToBase64String($enc)
+ }
  function SaveSettings {
-  if($script:Fields['url'].Text -notmatch '^https://[^/]+/api/excel-daily/events$'){throw 'Worker APIのURLが正しくありません。'}
+  $urlText=$script:Fields['url'].Text.Trim()
+  if(-not (Test-AllowedApiUri $urlText)){throw 'Worker APIのURLが正しくありません。'}
   $used=@()
   foreach($key in @('day','night','refresh','tomorrow')){
    $value=[string]$script:HotkeyFields[$key].SelectedItem
@@ -129,8 +159,13 @@ try {
   }
   $script:Cfg.agent.display_name=$script:Fields['name'].Text.Trim()
   $script:Cfg.agent.remote_update=[bool]$script:Remote.Checked
-  $script:Cfg.data_source.api_url=$script:Fields['url'].Text.Trim()
-  $script:Cfg.data_source.api_token=$script:Fields['token'].Text.Trim()
+  $script:Cfg.data_source.api_url=$urlText
+  $enteredToken=$script:Fields['token'].Text.Trim()
+  if($enteredToken){
+   $script:Cfg.data_source.api_token=Protect-ExcelDailyToken $enteredToken
+  }elseif([string]$script:Cfg.data_source.api_token -and -not ([string]$script:Cfg.data_source.api_token).Trim().StartsWith('dpapi:')){
+   $script:Cfg.data_source.api_token=Protect-ExcelDailyToken ([string]$script:Cfg.data_source.api_token)
+  }
   $script:Cfg.workbook.filename_pattern=$script:Fields['pattern'].Text
   $script:Cfg.workbook.selected_workbook=$script:Fields['selected'].Text
   $script:Cfg.sheets.day=$script:Fields['daySheet'].Text
@@ -139,7 +174,14 @@ try {
   $script:Cfg.auto_update.enabled=[bool]$script:Auto.Checked
   $script:Cfg.auto_save.enabled=[bool]$script:AutoSave.Checked
   $script:Cfg.auto_save.interval_minutes=[int]$script:AutoSaveMinutes.Value
-  [IO.File]::WriteAllText($file,(ConvertTo-Json -InputObject $script:Cfg -Depth 25),([Text.UTF8Encoding]::new($false)))
+  $tmpCfg=Join-Path $dir ('settings.'+[guid]::NewGuid().ToString('N')+'.tmp')
+  try{
+   [IO.File]::WriteAllText($tmpCfg,(ConvertTo-Json -InputObject $script:Cfg -Depth 25),([Text.UTF8Encoding]::new($false)))
+   [IO.File]::Copy($tmpCfg,$file,$true)
+  }finally{
+   Remove-Item -LiteralPath $tmpCfg -Force -ErrorAction SilentlyContinue
+  }
+  if($enteredToken){$script:Fields['token'].Text=''}
   $runKey='HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
   if(!(Test-Path -LiteralPath $runKey)){New-Item -Path $runKey -Force|Out-Null}
   $agentExe=Join-Path $dir 'excel-daily.exe'
@@ -151,10 +193,13 @@ try {
  }
  function StopOwnAgent {
   $agentPath=Join-Path $dir 'excel-daily.exe'
-  if(Test-Path -LiteralPath (Join-Path $dir 'excel-daily-busy.lock')){throw '更新中のため停止できません。'}
-  Get-CimInstance Win32_Process -Filter "name='excel-daily.exe'" -ErrorAction SilentlyContinue |
-   Where-Object { $_.ExecutablePath -ieq $agentPath } |
-   ForEach-Object {Stop-Process -Id $_.ProcessId -ErrorAction SilentlyContinue}
+  $own=@(Get-CimInstance Win32_Process -Filter "name='excel-daily.exe'" -ErrorAction SilentlyContinue |
+   Where-Object { $_.ExecutablePath -ieq $agentPath })
+  if($own.Count -gt 0 -and (Test-Path -LiteralPath (Join-Path $dir 'excel-daily-busy.lock'))){throw '更新中のため停止できません。'}
+  foreach($proc in $own){
+   Stop-Process -Id $proc.ProcessId -ErrorAction SilentlyContinue
+   Wait-Process -Id $proc.ProcessId -Timeout 10 -ErrorAction SilentlyContinue
+  }
  }
  function ButtonAt([string]$t,[int]$x,[int]$y,[int]$w,[scriptblock]$cb){
   $b=[System.Windows.Forms.Button]::new()
@@ -189,13 +234,20 @@ try {
    if(!$proc -or $proc.ProcessName -ine 'excel-daily'){throw 'エージェントが起動していません。'}
    $commandPath=Join-Path $dir 'excel-daily-command.json'
    if(Test-Path $commandPath){throw '前の更新処理が完了していません。'}
-   [IO.File]::WriteAllText($commandPath,'{"action":"tomorrow"}',([Text.UTF8Encoding]::new($false)))
+   $tmpCommand=Join-Path $dir ('excel-daily-command-'+[guid]::NewGuid().ToString('N')+'.tmp')
+   try{
+    [IO.File]::WriteAllText($tmpCommand,'{"action":"tomorrow"}',([Text.UTF8Encoding]::new($false)))
+    [IO.File]::Move($tmpCommand,$commandPath)
+   }finally{
+    Remove-Item -LiteralPath $tmpCommand -Force -ErrorAction SilentlyContinue
+   }
    $script:Status.Text='翌日の予定更新を受け付けました。進行状況はExcel下部に表示されます。'
   }catch{$script:Status.Text='処理に失敗しました。設定ログを確認してください。';WriteSettingsLog 'GUI_ERROR' $_.Exception.Message}
  }
  ButtonAt 'GitHub更新を確認' 346 594 332 {
   try{
    SaveSettings
+   if($version -notmatch '^\d+\.\d+\.\d+$'){throw '現在のバージョンが正しくありません。'}
    $helper=Join-Path $dir 'check_update.ps1'
    # Unique per request: a stale UPDATE_READY from yesterday cannot close this window.
    $statusPath=Join-Path $dir ("excel-daily-update-"+[guid]::NewGuid().ToString('N')+".txt")
@@ -203,16 +255,17 @@ try {
    $script:UpdateRequestActive=$true
    $args=@('-NoProfile','-NonInteractive','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',('"' + $helper + '"'),
     '-Executable',('"' + (Join-Path $dir 'excel-daily.exe') + '"'),
-    '-CurrentVersion',$version,'-Repo','maedandori/excel-daily',
+    '-CurrentVersion',('"' + $version + '"'),'-Repo','maedandori/excel-daily',
     '-PidToWait',[string]$PID,'-StatusFile',('"' + $statusPath + '"'))
    Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList $args|Out-Null
    $script:Status.Text='GitHubで更新を確認しています…'
    WriteSettingsLog 'UPDATE_REQUESTED' $script:UpdateStatusPath
   }catch{
    $script:UpdateRequestActive=$false
+   if($script:UpdateStatusPath){Remove-Item -LiteralPath $script:UpdateStatusPath -Force -ErrorAction SilentlyContinue;$script:UpdateStatusPath=''}
    WriteSettingsLog 'UPDATE_START_FAILED' $_.Exception.Message
    $script:Status.Text='処理に失敗しました。設定ログを確認してください。';WriteSettingsLog 'GUI_ERROR' $_.Exception.Message
- }
+  }
  }
  $timer=[System.Windows.Forms.Timer]::new();$timer.Interval=1000
  $timer.Add_Tick({
@@ -235,9 +288,13 @@ try {
     if(ShouldCloseSettingsForUpdate $script:UpdateRequestActive $message){
      $script:ShutdownReason='fresh-GitHub-update'
      WriteSettingsLog 'UPDATE_READY_CLOSE'
+     Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+     $script:UpdateStatusPath=''
      $timer.Stop();$form.Close()
     }elseif($message -eq 'UP_TO_DATE' -or $message -eq 'UPDATE_DEFERRED' -or $message -like 'UPDATE_FAILED*'){
      $script:UpdateRequestActive=$false
+     Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+     $script:UpdateStatusPath=''
      WriteSettingsLog 'UPDATE_FINISHED' $message
     }
    }catch{WriteSettingsLog 'STATUS_CHECK_ERROR' $_.Exception.Message}
