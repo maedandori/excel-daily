@@ -45,13 +45,13 @@ function FindDryingRows($sheet,$cfg){
  return @{rows=@($rows);machine=$m;start=$s;duration=$d}
 }
 function UpdateDryingTable {
- param($sheet,$cfg,$book,$state,[datetime]$now,[bool]$timeOnly,[object[]]$entries)
+ param($sheet,$cfg,$book,$state,[datetime]$now,[bool]$timeOnly,[object[]]$entries,[string]$ResolvedShift=$Shift)
  $stats=@{added=0;updated=0;preserved=0}
  if($cfg.drying -and $cfg.drying.enabled -eq $false){return $stats}
  if(!$entries -or $entries.Count -eq 0){return $stats}
  $usable=@()
  foreach($e in $entries){
-  if([string]$e.shift -ne [string]$Shift){continue}
+  if([string]$e.shift -ne $ResolvedShift){continue}
   if(!$e.id -or !$e.machine -or !$e.scheduled_at -or !$e.time -or
      !$e.materials -or @($e.materials).Count -eq 0){
    throw '乾燥予定のデータ形式が正しくありません。Excelは変更しません。'
@@ -96,12 +96,10 @@ function UpdateDryingTable {
   }
   if($previous){
    $row=[int]$previous.row
-   if($past -or ($cfg.update_policy.preserve_past -eq $true -and !$carryover -and
-      $previous.scheduled_at -and
-      [datetime]::Parse([string]$previous.scheduled_at,[Globalization.CultureInfo]::InvariantCulture) -le $now)){
+   if($e.completed -eq $true){
     $stats.preserved++;continue
    }
-   if((ExcelTimeText $sheet $startCol $row) -ne $targetTime){
+   if((ExcelTimeText $sheet $startCol $row) -ne ([TimeSpan]::Parse($targetTime)).ToString('hh\:mm')){
     PutValue $sheet $startCol $row $targetTime
     $stats.updated++
    }
@@ -138,10 +136,10 @@ function UpdateDryingTable {
    Write-Output "乾燥原料の空き行がありません: $machine 号機"
    $stats.preserved++;continue
   }
-  PutValue $sheet $machineCol $row $machine
+  PutTextValue $sheet $machineCol $row $machine
   PutValue $sheet $startCol $row $targetTime
   # Resin drying duration is grade-specific: never fabricate hours.
-  PutValue $sheet $durationCol $row (DryingTimeFromConfig $cfg @($e.materials))
+  PutTextValue $sheet $durationCol $row (DryingTimeFromConfig $cfg @($e.materials))
   $occupied[$row]=$key
   $state[$key]=@{row=$row;scheduled_at=[string]$e.scheduled_at}
   $stats.added++

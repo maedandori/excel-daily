@@ -394,14 +394,7 @@ function TimeStillPending([string]$existing,[datetime]$scheduled,[datetime]$now)
 # Only a server-authorized native-shift history event can fill an empty past slot.
 # Time-only refresh, legacy JSON and completed/manual records remain protected.
 function CanRefreshTrackedTime($event,[bool]$past,[bool]$carryover,[bool]$preservePast,$previous,[datetime]$now) {
-    if($event.completed -eq $true -or $past){return $false}
-    if($carryover -or -not $preservePast){return $true}
-    # Exact stable ID and same machine already verified by the caller.
-    # A cycle forecast is for the next order of the currently running machine.
-    if([string]$event.forecast_source -eq 'cycle' -and $event.history_replay -ne $true){
-        return ([datetime]::Parse([string]$event.scheduled_at,[Globalization.CultureInfo]::InvariantCulture) -gt $now)
-    }
-    if($previous.scheduled_at -and ([datetime]::Parse([string]$previous.scheduled_at,[Globalization.CultureInfo]::InvariantCulture) -le $now)){return $false}
+    if($event.completed -eq $true){return $false}
     return $true
 }
 function CanAppendScheduleEvent($event,[bool]$past,[bool]$timeOnly) {
@@ -902,7 +895,7 @@ foreach ($e in $ordered) {
         if(TestScheduleRowMarked $sheet $machineCol $timeCol $adopt){$kept++;continue}
         SetScheduleBadges $sheet $machineCol $adopt $e $cfg
         $oldTime=ExcelTimeText $sheet $timeCol $adopt
-        $canUpdate=(-not $past) -and ($carryover -or -not [bool]$cfg.update_policy.preserve_past -or (TimeStillPending $oldTime $when $now))
+        $canUpdate=($e.completed -ne $true)
         if($canUpdate) {
             $newTime=EventTime $e
             if($oldTime -ne ([TimeSpan]::Parse($newTime)).ToString('hh\:mm')) {
@@ -911,9 +904,7 @@ foreach ($e in $ordered) {
             }
             if(-not $TimeOnly -and $kind -eq 'color'){RepairColorIfBroken $sheet $cfg $e $adopt}
         }
-        if($canUpdate -or $past){
-            SetScheduleRowIdentity $state $key $prefix $adopt ([string]$e.scheduled_at)
-        }
+        SetScheduleRowIdentity $state $key $prefix $adopt ([string]$e.scheduled_at)
         $kept++
         continue
     }
@@ -951,11 +942,27 @@ foreach ($e in $ordered) {
     $state[$key] = @{row=$emptyRow; scheduled_at=[string]$e.scheduled_at}
     $added++
 }
+$dryingStats = UpdateDryingTable -sheet $sheet -cfg $cfg -book $book -state $state -now $now -timeOnly ([bool]$TimeOnly) -entries $script:DryingEntries -ResolvedShift $Shift
+$added += [int]$dryingStats.added
+$changed += [int]$dryingStats.updated
+$kept += [int]$dryingStats.preserved
 $shiftDate=[datetime]::ParseExact((ShiftDate $Shift $DateOffset $now),'yyyy-MM-dd',[Globalization.CultureInfo]::InvariantCulture)
 $visiblePending=@(GetVisiblePendingSchedule $sheet $cfg $state $book $start $step $count $shiftDate $Shift $now @($ordered))
 MovePendingScheduleOrder $sheet $cfg $state $visiblePending
 RemoveUnusedScheduleBadges $sheet ([string]$cfg.columns.mold_machine) $start $step $count
 RemoveUnusedScheduleBadges $sheet ([string]$cfg.columns.color_machine) $start $step $count
+$pruneCutoff = $now.AddDays(-14)
+foreach ($stateKey in @($state.Keys)) {
+    $entry = $state[$stateKey]
+    if ($entry -and $entry.scheduled_at) {
+        try {
+            $entryTime = [datetime]::Parse([string]$entry.scheduled_at, [Globalization.CultureInfo]::InvariantCulture)
+            if ($entryTime -lt $pruneCutoff) {
+                $state.Remove($stateKey)
+            }
+        } catch {}
+    }
+}
 # Save only our local row-ID state atomically. The open Excel workbook remains unsaved.
 $json = ConvertTo-Json -InputObject $state -Depth 5
 $tmpState = Join-Path $baseDir ('excel-daily-state-' + [guid]::NewGuid().ToString('N') + '.tmp')
