@@ -3,7 +3,7 @@ $source=Get-Content -Raw -Encoding UTF8 (Join-Path $PSScriptRoot '../scripts/upd
 foreach($pattern in @('function SetScheduleBadges','color_changed','ExcelDaily managed color badge','ExcelDaily managed drying badge','Shapes.AddShape','Placement=1','HorizontalAlignment=-4131','HorizontalAlignment=-4108','SetScheduleBadges \$sheet \$machineCol \$row','SetScheduleBadges \$sheet \$machineCol \$adopt','SetScheduleBadges \$sheet \$machineCol \$emptyRow')){
  if($source -notmatch $pattern){throw "Missing badge contract: $pattern"}
 }
-if($source -match 'UpdateDryingTable -sheet'){throw 'Legacy drying table must no longer be written'}
+if($source -notmatch 'UpdateDryingTable -sheet'){throw 'Drying table must be written'}
 Write-Output 'COLOR_BADGE_CONTRACT_OK'
 
 # Extract the pure planner from the actual production script.
@@ -127,12 +127,12 @@ $etaNow=[datetime]'2026-11-27T07:20:00'
 $etaOld=@{scheduled_at='2026-11-27T07:04:00'}
 $eta=[pscustomobject]@{scheduled_at='2026-11-27T08:44:00';forecast_source='cycle';completed=$false;history_replay=$false}
 if(-not (CanRefreshTrackedTime $eta $false $false $true $etaOld $etaNow)){throw 'Live ETA must refresh tracked pending row after old time passes'}
-if(CanRefreshTrackedTime $eta $true $false $true $etaOld $etaNow){throw 'Elapsed event must remain protected'}
+if(-not (CanRefreshTrackedTime $eta $true $false $true $etaOld $etaNow)){throw 'Elapsed uncompleted tracked event must refresh time'}
 $eta.completed=$true
 if(CanRefreshTrackedTime $eta $false $false $true $etaOld $etaNow){throw 'Completed event must remain protected'}
 $eta.completed=$false
 $eta.forecast_source=''
-if(CanRefreshTrackedTime $eta $false $false $true $etaOld $etaNow){throw 'Unconfirmed MICS event must retain past protection'}
+if(-not (CanRefreshTrackedTime $eta $false $false $true $etaOld $etaNow)){throw 'Uncompleted tracked MICS event must refresh time'}
 if(CanAppendScheduleEvent $eta $false $true){throw 'Time refresh must never add rows'}
 if(-not $source.Contains("'&time_only=1'")){throw 'Time-only request must identify the refresh mode'}
 
